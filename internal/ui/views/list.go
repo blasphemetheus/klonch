@@ -667,6 +667,18 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		v.applyFilter()
 		v.statusMsg = fmt.Sprintf("View: %s (H to cycle)", v.viewMode.String())
 		return v, nil
+
+	case "A":
+		// Quick toggle between Active and All
+		if v.viewMode == ViewModeActive {
+			v.viewMode = ViewModeAll
+			v.statusMsg = "View: All tasks"
+		} else {
+			v.viewMode = ViewModeActive
+			v.statusMsg = "View: Active tasks only"
+		}
+		v.applyFilter()
+		return v, nil
 	}
 
 	return v, nil
