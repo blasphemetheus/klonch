@@ -1,0 +1,15 @@
+# Binary (root level only)
+/klonch
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+*.log
