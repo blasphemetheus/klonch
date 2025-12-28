@@ -1819,17 +1819,22 @@ func (v ListView) handleDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleProjectSelector handles project selection
 func (v ListView) handleProjectSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(v.projects)
 	switch msg.String() {
 	case "up", "k":
 		if v.selectorCursor > 0 {
 			v.selectorCursor--
+		} else if n > 0 {
+			v.selectorCursor = n - 1 // Wrap to bottom
 		}
 	case "down", "j":
-		if v.selectorCursor < len(v.projects)-1 {
+		if v.selectorCursor < n-1 {
 			v.selectorCursor++
+		} else {
+			v.selectorCursor = 0 // Wrap to top
 		}
 	case "enter":
-		if v.selectorCursor < len(v.projects) {
+		if v.selectorCursor < n {
 			project := v.projects[v.selectorCursor]
 			v.selectingProject = false
 			return v, v.moveTaskToProject(v.tasks[v.cursor].ID, project.ID)
@@ -1842,17 +1847,22 @@ func (v ListView) handleProjectSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleTagSelector handles tag selection
 func (v ListView) handleTagSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(v.tags)
 	switch msg.String() {
 	case "up", "k":
 		if v.selectorCursor > 0 {
 			v.selectorCursor--
+		} else if n > 0 {
+			v.selectorCursor = n - 1 // Wrap to bottom
 		}
 	case "down", "j":
-		if v.selectorCursor < len(v.tags)-1 {
+		if v.selectorCursor < n-1 {
 			v.selectorCursor++
+		} else {
+			v.selectorCursor = 0 // Wrap to top
 		}
 	case "enter", " ":
-		if v.selectorCursor < len(v.tags) {
+		if v.selectorCursor < n {
 			tag := v.tags[v.selectorCursor]
 			task := v.tasks[v.cursor]
 			// Toggle tag on task
