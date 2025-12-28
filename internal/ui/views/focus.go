@@ -741,6 +741,7 @@ func (v FocusView) renderMetadata(width int) string {
 }
 
 // IsInputMode returns whether the view is in input mode
+// Returns true to prevent global 'q' from quitting - focus view handles its own exit
 func (v FocusView) IsInputMode() bool {
-	return false
+	return true
 }
