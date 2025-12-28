@@ -58,33 +58,47 @@ Usage:
 
 Quick Add Syntax:
   klonch add "Buy groceries"
-  klonch add "Review PR @work !high due:tomorrow"
+  klonch add "Review PR #work @urgent !high due:tomorrow"
 
-  Tags:      @tag          (e.g., @home, @work, @errands)
-  Priority:  !low !medium !high !urgent
+  Project:   #name         (e.g., #work, #personal, #inbox)
+  Tags:      @tag          (e.g., @home, @urgent, @review)
+  Priority:  !low !medium !high !urgent (or !l !m !h !u)
   Due date:  due:tomorrow due:friday due:2024-01-15
+             due:today due:mon due:nextweek
 
 TUI Options:
   --view <name>     Starting view (list, kanban, eisenhower, calendar, pomodoro)
   --theme <name>    Theme (nord, dracula, gruvbox, catppuccin)
 
-Keybindings:
-  Navigation:   ↑/↓ or j/k    Move cursor
-                g/G           Go to top/bottom
-                space         Toggle selection
-                V             Select all
+TUI Keybindings:
+  Navigation:   j/k ↑/↓       Move cursor
+                g/G           Top/bottom
+                Space         Toggle selection
 
-  Actions:      a             Add new task
-                enter         Edit task
-                tab           Toggle done
-                d             Delete (with confirm)
+  Tasks:        a             Add task
+                s             Add subtask
+                Enter         Edit
+                Tab           Toggle done
+                d             Delete
                 p             Cycle priority
+                m             Move to project
+                t             Toggle tag
+                o             Expand/collapse subtasks
+                E/C           Expand/collapse all
+                f             Focus mode
+
+  Filtering:    /             Search
+                M             Filter by project
+                T             Filter by tag
+                A             Toggle Active/All
+                Esc           Clear filters
 
   Views:        1-8           Switch views
+                :             Command palette
                 ?             Help
                 q             Quit
 
-For more info: https://github.com/dori/klonch`
+For more: https://github.com/dori/klonch`
 
 	fmt.Println(help)
 }
@@ -92,7 +106,12 @@ For more info: https://github.com/dori/klonch`
 func handleAdd(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: klonch add <task>")
-		fmt.Fprintln(os.Stderr, "Example: klonch add \"Buy groceries @errands !high due:tomorrow\"")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Examples:")
+		fmt.Fprintln(os.Stderr, "  klonch add \"Buy groceries\"")
+		fmt.Fprintln(os.Stderr, "  klonch add \"Review PR #work @urgent !high due:tomorrow\"")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Syntax: #project @tag !priority due:date")
 		os.Exit(1)
 	}
 
@@ -110,6 +129,32 @@ func handleAdd(args []string) {
 	}
 	defer database.Close()
 
+	// Find or create project
+	projectID := "inbox"
+	projectName := "Inbox"
+	if task.parsedProject != "" {
+		// Try to find existing project by name (case-insensitive)
+		row := database.QueryRow(`
+			SELECT id, name FROM projects
+			WHERE LOWER(name) = LOWER(?) AND archived = 0
+		`, task.parsedProject)
+
+		var existingID, existingName string
+		if err := row.Scan(&existingID, &existingName); err == nil {
+			projectID = existingID
+			projectName = existingName
+		} else {
+			// Create new project
+			projectID = strings.ToLower(task.parsedProject)
+			projectName = task.parsedProject
+			now := time.Now()
+			database.Exec(`
+				INSERT OR IGNORE INTO projects (id, name, position, archived, created_at, updated_at)
+				VALUES (?, ?, 0, 0, ?, ?)
+			`, projectID, projectName, now, now)
+		}
+	}
+
 	// Insert task
 	now := time.Now()
 	var dueDate interface{}
@@ -119,8 +164,8 @@ func handleAdd(args []string) {
 
 	_, err = database.Exec(`
 		INSERT INTO tasks (id, title, status, priority, project_id, due_date, created_at, updated_at)
-		VALUES (?, ?, 'pending', ?, 'inbox', ?, ?, ?)
-	`, task.ID, task.Title, task.Priority, dueDate, now, now)
+		VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
+	`, task.ID, task.Title, task.Priority, projectID, dueDate, now, now)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating task: %v\n", err)
@@ -141,7 +186,11 @@ func handleAdd(args []string) {
 		`, task.ID, tagID)
 	}
 
+	// Output
 	fmt.Printf("Created: %s\n", task.Title)
+	if projectID != "inbox" {
+		fmt.Printf("Project: %s\n", projectName)
+	}
 	if task.DueDate != nil {
 		fmt.Printf("Due: %s\n", formatDueDate(*task.DueDate))
 	}
@@ -155,7 +204,8 @@ func handleAdd(args []string) {
 
 type quickAddTask struct {
 	model.Task
-	parsedTags []string
+	parsedTags    []string
+	parsedProject string
 }
 
 func parseQuickAdd(text string) quickAddTask {
@@ -171,6 +221,10 @@ func parseQuickAdd(text string) quickAddTask {
 
 	for _, word := range words {
 		switch {
+		// Project (#work, #personal, etc.)
+		case strings.HasPrefix(word, "#"):
+			task.parsedProject = strings.TrimPrefix(word, "#")
+
 		// Tags (@home, @work, etc.)
 		case strings.HasPrefix(word, "@"):
 			task.parsedTags = append(task.parsedTags, word)
