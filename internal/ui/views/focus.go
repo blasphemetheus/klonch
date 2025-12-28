@@ -277,7 +277,7 @@ func (v FocusView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p": // Cycle priority
 			return v, v.cyclePriority()
 
-		case "esc", "q": // Return to list view
+		case "escape", "esc", "q": // Return to list view
 			return v, func() tea.Msg { return BackToListMsg{} }
 		}
 	}
