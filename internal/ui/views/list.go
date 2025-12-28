@@ -66,6 +66,27 @@ func (m ListViewMode) String() string {
 	}
 }
 
+// UndoActionType represents the type of action for undo/redo
+type UndoActionType int
+
+const (
+	UndoActionCreate UndoActionType = iota
+	UndoActionDelete
+	UndoActionUpdate
+	UndoActionToggleStatus
+	UndoActionSetParent
+)
+
+// UndoAction represents an undoable action
+type UndoAction struct {
+	Type        UndoActionType
+	TaskID      string
+	Task        *model.Task // For create/delete - the full task
+	OldTask     *model.Task // For update - the old state
+	NewTask     *model.Task // For update - the new state
+	Description string      // Human-readable description
+}
+
 // projectColors is a palette of distinct colors for projects
 // These are hex colors that work well on both dark and light terminals
 var projectColors = []string{
@@ -121,6 +142,7 @@ var allCommands = []CommandDef{
 	{Name: "priority", Aliases: []string{"pri", "p"}, Description: "Set priority", Usage: "priority high", HasArgs: true},
 	{Name: "tag", Aliases: []string{"t"}, Description: "Add tag to task", Usage: "tag @work", HasArgs: true},
 	{Name: "project", Aliases: []string{"proj", "mv", "move"}, Description: "Move to project", Usage: "project inbox", HasArgs: true},
+	{Name: "parent", Aliases: []string{"setparent"}, Description: "Set parent task (make subtask)", Usage: "parent", HasArgs: false},
 	{Name: "newproject", Aliases: []string{"np", "addproject"}, Description: "Create new project", Usage: "newproject Work", HasArgs: true},
 	{Name: "recolor", Aliases: []string{}, Description: "Reassign colors to all projects", Usage: "recolor", HasArgs: false},
 	{Name: "newtag", Aliases: []string{"nt", "addtag"}, Description: "Create new tag", Usage: "newtag @urgent", HasArgs: true},
@@ -157,10 +179,11 @@ type ListView struct {
 	expanded map[string]bool   // Tasks with expanded subtasks
 	blocked  map[string]bool   // Tasks with incomplete dependencies
 
-	mode         ListMode
-	input        textinput.Model
-	editingID    string
-	parentID     string // For creating subtasks
+	mode           ListMode
+	input          textinput.Model
+	editingID      string
+	editingOldTask *model.Task // Original task state before editing (for undo)
+	parentID       string      // For creating subtasks
 	searchFilter string // Current search filter
 	statusMsg    string // Status message to display
 
@@ -176,6 +199,12 @@ type ListView struct {
 	// For filter selection (vs assignment)
 	selectingProjectFilter bool
 	selectingTagFilter     bool
+	selectorSearch         string // Type-to-filter search in selectors
+
+	// For parent selection (making a task a subtask)
+	selectingParent  bool
+	parentTaskID     string       // Task to set parent for
+	parentCandidates []model.Task // Valid parent candidates
 
 	// For dependency selection
 	selectingDep     bool
@@ -202,6 +231,10 @@ type ListView struct {
 
 	// View mode filter
 	viewMode ListViewMode // What tasks to show (All, Active, Recent, etc.)
+
+	// Undo/redo history
+	undoStack []UndoAction
+	redoStack []UndoAction
 }
 
 // NewListView creates a new list view
@@ -231,7 +264,7 @@ func (v ListView) IsInputMode() bool {
 	if v.mode == ListModeAdd || v.mode == ListModeEdit || v.mode == ListModeAddSubtask || v.mode == ListModeSearch || v.mode == ListModeCommand {
 		return true
 	}
-	if v.selectingProject || v.selectingTag || v.selectingDep || v.selectingProjectFilter || v.selectingTagFilter {
+	if v.selectingProject || v.selectingTag || v.selectingDep || v.selectingProjectFilter || v.selectingTagFilter || v.selectingParent {
 		return true
 	}
 	if v.mode == ListModeConfirmDelete {
@@ -291,6 +324,14 @@ func (v ListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return errorMsg{err: msg.err}
 			}
 		}
+		// Record undo action for task creation
+		task := msg.task
+		v.pushUndo(UndoAction{
+			Type:        UndoActionCreate,
+			TaskID:      task.ID,
+			Task:        &task,
+			Description: fmt.Sprintf("Create \"%s\"", task.Title),
+		})
 		// Focus on the new task after reload so user can adjust priority
 		v.focusAfterLoadTaskID = msg.task.ID
 		return v, v.loadTasks
@@ -397,6 +438,11 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v.handleTagFilterSelector(msg)
 	}
 
+	// Handle parent selector
+	if v.selectingParent {
+		return v.handleParentSelector(msg)
+	}
+
 	switch msg.String() {
 	// Navigation
 	case "up", "k":
@@ -468,15 +514,53 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		if len(v.tasks) > 0 {
+			task := v.tasks[v.cursor]
+			taskCopy := task
 			v.mode = ListModeEdit
-			v.editingID = v.tasks[v.cursor].ID
-			v.input.SetValue(v.tasks[v.cursor].Title)
+			v.editingID = task.ID
+			v.editingOldTask = &taskCopy // Save for undo
+			v.input.SetValue(task.Title)
 			v.input.Focus()
 			return v, textinput.Blink
 		}
 
 	case "tab":
-		// Toggle done
+		// Toggle done - capture old state for undo
+		var targetTasks []model.Task
+		if len(v.selected) > 0 {
+			for id := range v.selected {
+				for _, task := range v.tasks {
+					if task.ID == id {
+						taskCopy := task
+						targetTasks = append(targetTasks, taskCopy)
+						break
+					}
+				}
+			}
+		} else if len(v.tasks) > 0 {
+			taskCopy := v.tasks[v.cursor]
+			targetTasks = append(targetTasks, taskCopy)
+		}
+		// Record undo for each task
+		for _, task := range targetTasks {
+			oldTask := task
+			newTask := task
+			if task.Status == model.StatusDone {
+				newTask.Status = model.StatusPending
+				newTask.CompletedAt = nil
+			} else {
+				newTask.Status = model.StatusDone
+				now := time.Now()
+				newTask.CompletedAt = &now
+			}
+			v.pushUndo(UndoAction{
+				Type:        UndoActionToggleStatus,
+				TaskID:      task.ID,
+				OldTask:     &oldTask,
+				NewTask:     &newTask,
+				Description: fmt.Sprintf("Toggle \"%s\"", task.Title),
+			})
+		}
 		return v, v.toggleSelected()
 
 	case "d":
@@ -494,7 +578,32 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "p":
-		// Cycle priority
+		// Cycle priority - capture old state for undo
+		if len(v.tasks) > 0 {
+			task := v.tasks[v.cursor]
+			oldTask := task
+			newTask := task
+			// Calculate new priority
+			switch task.Priority {
+			case model.PriorityLow:
+				newTask.Priority = model.PriorityMedium
+			case model.PriorityMedium:
+				newTask.Priority = model.PriorityHigh
+			case model.PriorityHigh:
+				newTask.Priority = model.PriorityUrgent
+			case model.PriorityUrgent:
+				newTask.Priority = model.PriorityLow
+			default:
+				newTask.Priority = model.PriorityMedium
+			}
+			v.pushUndo(UndoAction{
+				Type:        UndoActionUpdate,
+				TaskID:      task.ID,
+				OldTask:     &oldTask,
+				NewTask:     &newTask,
+				Description: fmt.Sprintf("Priority %s → %s", oldTask.Priority, newTask.Priority),
+			})
+		}
 		return v, v.cyclePriority()
 
 	case "/":
@@ -536,6 +645,7 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(v.projects) > 0 {
 			v.selectingProjectFilter = true
 			v.selectorCursor = 0
+			v.selectorSearch = ""
 		} else {
 			v.statusMsg = "No projects yet. Create one with :newproject"
 		}
@@ -546,8 +656,31 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(v.tags) > 0 {
 			v.selectingTagFilter = true
 			v.selectorCursor = 0
+			v.selectorSearch = ""
 		} else {
 			v.statusMsg = "No tags yet. Create one with :newtag"
+		}
+		return v, nil
+
+	case "P":
+		// Set parent (make current task a subtask of another)
+		if len(v.tasks) > 0 {
+			task := v.tasks[v.cursor]
+			// Can't set parent for a task that already has subtasks
+			if len(task.Subtasks) > 0 {
+				v.statusMsg = "Cannot make a task with subtasks into a subtask"
+				return v, nil
+			}
+			// Build list of valid parent candidates
+			v.parentCandidates = v.getParentCandidates(task.ID)
+			if len(v.parentCandidates) == 0 {
+				v.statusMsg = "No valid parent tasks available"
+				return v, nil
+			}
+			v.selectingParent = true
+			v.parentTaskID = task.ID
+			v.selectorCursor = 0
+			v.selectorSearch = ""
 		}
 		return v, nil
 
@@ -578,7 +711,7 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Only toggle for parent tasks (not subtasks themselves)
 			if task.ParentID == nil && len(task.Subtasks) > 0 {
 				v.expanded[task.ID] = !v.expanded[task.ID]
-				v.tasks = v.flattenTasks(v.allTasks)
+				v.applyFilter()
 			} else if len(task.Subtasks) == 0 && task.ParentID == nil {
 				v.statusMsg = "No subtasks to expand"
 			}
@@ -595,7 +728,7 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if count > 0 {
-			v.tasks = v.flattenTasks(v.allTasks)
+			v.applyFilter()
 			v.statusMsg = fmt.Sprintf("Expanded %d tasks", count)
 		} else {
 			v.statusMsg = "No tasks with subtasks"
@@ -607,7 +740,7 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(v.expanded) > 0 {
 			count := len(v.expanded)
 			v.expanded = make(map[string]bool)
-			v.tasks = v.flattenTasks(v.allTasks)
+			v.applyFilter()
 			v.statusMsg = fmt.Sprintf("Collapsed %d tasks", count)
 		} else {
 			v.statusMsg = "Nothing to collapse"
@@ -679,6 +812,14 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		v.applyFilter()
 		return v, nil
+
+	case "ctrl+z":
+		// Undo
+		return v.undo()
+
+	case "ctrl+y", "ctrl+shift+z":
+		// Redo
+		return v.redo()
 	}
 
 	return v, nil
@@ -732,14 +873,28 @@ func (v ListView) handleEditMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		title := strings.TrimSpace(v.input.Value())
-		if title != "" {
+		if title != "" && v.editingOldTask != nil {
+			// Only record undo if title actually changed
+			if title != v.editingOldTask.Title {
+				newTask := *v.editingOldTask
+				newTask.Title = title
+				v.pushUndo(UndoAction{
+					Type:        UndoActionUpdate,
+					TaskID:      v.editingID,
+					OldTask:     v.editingOldTask,
+					NewTask:     &newTask,
+					Description: fmt.Sprintf("Edit \"%s\"", v.editingOldTask.Title),
+				})
+			}
 			v.mode = ListModeNormal
 			v.input.Blur()
+			v.editingOldTask = nil
 			return v, v.updateTaskTitle(v.editingID, title)
 		}
 	case "esc":
 		v.mode = ListModeNormal
 		v.input.Blur()
+		v.editingOldTask = nil
 		return v, nil
 	}
 
@@ -904,6 +1059,8 @@ func (v ListView) executeCommand(command string) (tea.Model, tea.Cmd) {
 		return v.cmdAddTag(args)
 	case "project", "proj", "mv":
 		return v.cmdMoveToProject(args)
+	case "parent", "setparent":
+		return v.cmdSetParent()
 	case "newproject", "np", "addproject":
 		return v.cmdNewProject(args)
 	case "recolor":
@@ -1360,6 +1517,7 @@ func (v ListView) cmdFilter(args []string) (tea.Model, tea.Cmd) {
 func (v ListView) cmdFilterProject() (tea.Model, tea.Cmd) {
 	v.selectingProjectFilter = true
 	v.selectorCursor = 0
+	v.selectorSearch = ""
 	return v, nil
 }
 
@@ -1367,6 +1525,32 @@ func (v ListView) cmdFilterProject() (tea.Model, tea.Cmd) {
 func (v ListView) cmdFilterTag() (tea.Model, tea.Cmd) {
 	v.selectingTagFilter = true
 	v.selectorCursor = 0
+	v.selectorSearch = ""
+	return v, nil
+}
+
+// cmdSetParent opens the parent selector
+func (v ListView) cmdSetParent() (tea.Model, tea.Cmd) {
+	if len(v.tasks) == 0 {
+		v.statusMsg = "No task selected"
+		return v, nil
+	}
+	task := v.tasks[v.cursor]
+	// Can't set parent for a task that has subtasks
+	if len(task.Subtasks) > 0 {
+		v.statusMsg = "Cannot make a task with subtasks into a subtask"
+		return v, nil
+	}
+	// Build list of valid parent candidates
+	v.parentCandidates = v.getParentCandidates(task.ID)
+	if len(v.parentCandidates) == 0 {
+		v.statusMsg = "No valid parent tasks available"
+		return v, nil
+	}
+	v.selectingParent = true
+	v.parentTaskID = task.ID
+	v.selectorCursor = 0
+	v.selectorSearch = ""
 	return v, nil
 }
 
@@ -1809,6 +1993,21 @@ func (v ListView) handleDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		v.mode = ListModeNormal
+		// Capture tasks for undo before deleting
+		for _, id := range v.deleteIDs {
+			for _, task := range v.tasks {
+				if task.ID == id {
+					taskCopy := task
+					v.pushUndo(UndoAction{
+						Type:        UndoActionDelete,
+						TaskID:      id,
+						Task:        &taskCopy,
+						Description: fmt.Sprintf("Delete \"%s\"", task.Title),
+					})
+					break
+				}
+			}
+		}
 		return v, v.deleteTasks(v.deleteIDs)
 	case "n", "N", "esc":
 		v.mode = ListModeNormal
@@ -1918,81 +2117,512 @@ func (v ListView) handleDependencySelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	return v, nil
 }
 
-// handleProjectFilterSelector handles project filter selection
+// getFilteredProjects returns projects matching the current selector search
+func (v ListView) getFilteredProjects() []model.Project {
+	if v.selectorSearch == "" {
+		return v.projects
+	}
+	search := strings.ToLower(v.selectorSearch)
+	var filtered []model.Project
+	for _, p := range v.projects {
+		if strings.Contains(strings.ToLower(p.Name), search) {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
+}
+
+// handleProjectFilterSelector handles project filter selection with type-to-filter
 func (v ListView) handleProjectFilterSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Include "All" option at index 0
-	maxIndex := len(v.projects) // projects + "All" option
+	filtered := v.getFilteredProjects()
+	// Include "All" option at index 0 (only when not searching)
+	hasAllOption := v.selectorSearch == ""
+	maxIndex := len(filtered)
+	if hasAllOption {
+		maxIndex = len(filtered) // "All" is at 0, projects are 1..len
+	} else {
+		maxIndex = len(filtered) - 1 // No "All" option when filtering
+		if maxIndex < 0 {
+			maxIndex = 0
+		}
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if v.selectorCursor > 0 {
 			v.selectorCursor--
+		} else {
+			if hasAllOption {
+				v.selectorCursor = len(filtered) // Wrap to bottom
+			} else if len(filtered) > 0 {
+				v.selectorCursor = len(filtered) - 1
+			}
 		}
 	case "down", "j":
-		if v.selectorCursor < maxIndex {
+		limit := len(filtered)
+		if hasAllOption {
+			limit = len(filtered) // Can go from 0 to len(filtered)
+		} else {
+			limit = len(filtered) - 1
+		}
+		if v.selectorCursor < limit {
 			v.selectorCursor++
+		} else {
+			v.selectorCursor = 0 // Wrap to top
 		}
 	case "enter":
 		v.selectingProjectFilter = false
-		if v.selectorCursor == 0 {
-			// "All" selected - clear project filter
-			v.filterProjectID = ""
-			v.statusMsg = "Showing all projects"
-		} else if v.selectorCursor <= len(v.projects) {
-			project := v.projects[v.selectorCursor-1]
+		if hasAllOption {
+			if v.selectorCursor == 0 {
+				// "All" selected - clear project filter
+				v.filterProjectID = ""
+				v.statusMsg = "Showing all projects"
+			} else if v.selectorCursor <= len(filtered) {
+				project := filtered[v.selectorCursor-1]
+				v.filterProjectID = project.ID
+				v.statusMsg = fmt.Sprintf("Filtering by project: %s", project.Name)
+			}
+		} else if len(filtered) > 0 && v.selectorCursor < len(filtered) {
+			project := filtered[v.selectorCursor]
 			v.filterProjectID = project.ID
 			v.statusMsg = fmt.Sprintf("Filtering by project: %s", project.Name)
 		}
+		v.selectorSearch = ""
 		v.applyFilter()
 	case "esc":
 		v.selectingProjectFilter = false
+		v.selectorSearch = ""
+	case "backspace", "ctrl+h":
+		if len(v.selectorSearch) > 0 {
+			v.selectorSearch = v.selectorSearch[:len(v.selectorSearch)-1]
+			v.selectorCursor = 0 // Reset cursor when search changes
+		}
+	default:
+		// Type to filter - accept printable characters
+		if len(msg.String()) == 1 {
+			char := msg.String()[0]
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == ' ' || char == '-' || char == '_' {
+				v.selectorSearch += msg.String()
+				v.selectorCursor = 0 // Reset cursor when search changes
+			}
+		}
 	}
 	return v, nil
 }
 
-// handleTagFilterSelector handles tag filter selection
+// getFilteredTags returns tags matching the current selector search
+func (v ListView) getFilteredTags() []model.Tag {
+	if v.selectorSearch == "" {
+		return v.tags
+	}
+	search := strings.ToLower(v.selectorSearch)
+	var filtered []model.Tag
+	for _, t := range v.tags {
+		if strings.Contains(strings.ToLower(t.Name), search) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
+// handleTagFilterSelector handles tag filter selection with type-to-filter
 func (v ListView) handleTagFilterSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Include "Clear" option at index 0
-	maxIndex := len(v.tags) // tags + "Clear" option
+	filtered := v.getFilteredTags()
+	// Include "Clear" option at index 0 (only when not searching)
+	hasClearOption := v.selectorSearch == ""
+	maxIndex := len(filtered)
+	if !hasClearOption {
+		maxIndex = len(filtered) - 1
+		if maxIndex < 0 {
+			maxIndex = 0
+		}
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if v.selectorCursor > 0 {
 			v.selectorCursor--
+		} else {
+			if hasClearOption {
+				v.selectorCursor = len(filtered) // Wrap to bottom
+			} else if len(filtered) > 0 {
+				v.selectorCursor = len(filtered) - 1
+			}
 		}
 	case "down", "j":
-		if v.selectorCursor < maxIndex {
+		limit := len(filtered)
+		if !hasClearOption {
+			limit = len(filtered) - 1
+		}
+		if v.selectorCursor < limit {
 			v.selectorCursor++
+		} else {
+			v.selectorCursor = 0 // Wrap to top
 		}
 	case "enter", " ":
-		if v.selectorCursor == 0 {
-			// "Clear" selected - remove all tag filters
-			v.filterTagIDs = nil
-			v.statusMsg = "Tag filter cleared"
-			v.applyFilter()
-		} else if v.selectorCursor <= len(v.tags) {
-			tag := v.tags[v.selectorCursor-1]
-			// Toggle tag in filter
-			found := false
-			newTags := make([]string, 0, len(v.filterTagIDs))
-			for _, id := range v.filterTagIDs {
-				if id == tag.ID {
-					found = true
-				} else {
-					newTags = append(newTags, id)
-				}
+		if hasClearOption {
+			if v.selectorCursor == 0 {
+				// "Clear" selected - remove all tag filters
+				v.filterTagIDs = nil
+				v.statusMsg = "Tag filter cleared"
+				v.selectorSearch = ""
+				v.applyFilter()
+			} else if v.selectorCursor <= len(filtered) {
+				tag := filtered[v.selectorCursor-1]
+				v.toggleTagFilter(tag)
 			}
-			if found {
-				v.filterTagIDs = newTags
-				v.statusMsg = fmt.Sprintf("Removed %s from filter", tag.Name)
-			} else {
-				v.filterTagIDs = append(v.filterTagIDs, tag.ID)
-				v.statusMsg = fmt.Sprintf("Added %s to filter", tag.Name)
-			}
-			v.applyFilter()
+		} else if len(filtered) > 0 && v.selectorCursor < len(filtered) {
+			tag := filtered[v.selectorCursor]
+			v.toggleTagFilter(tag)
 		}
 	case "esc":
 		v.selectingTagFilter = false
+		v.selectorSearch = ""
+	case "backspace", "ctrl+h":
+		if len(v.selectorSearch) > 0 {
+			v.selectorSearch = v.selectorSearch[:len(v.selectorSearch)-1]
+			v.selectorCursor = 0 // Reset cursor when search changes
+		}
+	default:
+		// Type to filter - accept printable characters
+		if len(msg.String()) == 1 {
+			char := msg.String()[0]
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == ' ' || char == '-' || char == '_' {
+				v.selectorSearch += msg.String()
+				v.selectorCursor = 0 // Reset cursor when search changes
+			}
+		}
 	}
 	return v, nil
+}
+
+// toggleTagFilter toggles a tag in the filter list
+func (v *ListView) toggleTagFilter(tag model.Tag) {
+	found := false
+	newTags := make([]string, 0, len(v.filterTagIDs))
+	for _, id := range v.filterTagIDs {
+		if id == tag.ID {
+			found = true
+		} else {
+			newTags = append(newTags, id)
+		}
+	}
+	if found {
+		v.filterTagIDs = newTags
+		v.statusMsg = fmt.Sprintf("Removed %s from filter", tag.Name)
+	} else {
+		v.filterTagIDs = append(v.filterTagIDs, tag.ID)
+		v.statusMsg = fmt.Sprintf("Added %s to filter", tag.Name)
+	}
+	v.applyFilter()
+}
+
+// getParentCandidates returns valid parent tasks for the given task
+// A task cannot be its own parent, cannot be a parent of a task that has subtasks,
+// and subtasks cannot be parents (only one level of nesting)
+func (v ListView) getParentCandidates(taskID string) []model.Task {
+	var candidates []model.Task
+	for _, t := range v.allTasks {
+		// Skip the task itself
+		if t.ID == taskID {
+			continue
+		}
+		// Skip tasks that are already subtasks (only one level of nesting)
+		if t.ParentID != nil {
+			continue
+		}
+		candidates = append(candidates, t)
+	}
+	return candidates
+}
+
+// getFilteredParentCandidates returns parent candidates matching the search
+func (v ListView) getFilteredParentCandidates() []model.Task {
+	if v.selectorSearch == "" {
+		return v.parentCandidates
+	}
+	search := strings.ToLower(v.selectorSearch)
+	var filtered []model.Task
+	for _, t := range v.parentCandidates {
+		if strings.Contains(strings.ToLower(t.Title), search) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
+// handleParentSelector handles parent task selection with type-to-filter
+func (v ListView) handleParentSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	filtered := v.getFilteredParentCandidates()
+	// Include "Remove parent" option at index 0 (only when not searching and task has a parent)
+	var currentTask model.Task
+	for _, t := range v.tasks {
+		if t.ID == v.parentTaskID {
+			currentTask = t
+			break
+		}
+	}
+	hasRemoveOption := v.selectorSearch == "" && currentTask.ParentID != nil
+	maxIndex := len(filtered) - 1
+	if hasRemoveOption {
+		maxIndex = len(filtered) // "Remove parent" is at 0, tasks are 1..len
+	}
+	if maxIndex < 0 {
+		maxIndex = 0
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if v.selectorCursor > 0 {
+			v.selectorCursor--
+		} else {
+			if hasRemoveOption {
+				v.selectorCursor = len(filtered)
+			} else if len(filtered) > 0 {
+				v.selectorCursor = len(filtered) - 1
+			}
+		}
+	case "down", "j":
+		limit := len(filtered) - 1
+		if hasRemoveOption {
+			limit = len(filtered)
+		}
+		if v.selectorCursor < limit {
+			v.selectorCursor++
+		} else {
+			v.selectorCursor = 0
+		}
+	case "enter":
+		v.selectingParent = false
+		if hasRemoveOption && v.selectorCursor == 0 {
+			// Remove parent - make it a top-level task
+			v.selectorSearch = ""
+			return v, v.setTaskParent(v.parentTaskID, "")
+		} else {
+			idx := v.selectorCursor
+			if hasRemoveOption {
+				idx-- // Adjust for "Remove parent" option
+			}
+			if idx >= 0 && idx < len(filtered) {
+				parent := filtered[idx]
+				v.selectorSearch = ""
+				return v, v.setTaskParent(v.parentTaskID, parent.ID)
+			}
+		}
+		v.selectorSearch = ""
+	case "esc":
+		v.selectingParent = false
+		v.selectorSearch = ""
+	case "backspace", "ctrl+h":
+		if len(v.selectorSearch) > 0 {
+			v.selectorSearch = v.selectorSearch[:len(v.selectorSearch)-1]
+			v.selectorCursor = 0
+		}
+	default:
+		if len(msg.String()) == 1 {
+			char := msg.String()[0]
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == ' ' || char == '-' || char == '_' {
+				v.selectorSearch += msg.String()
+				v.selectorCursor = 0
+			}
+		}
+	}
+	return v, nil
+}
+
+// setTaskParent updates a task's parent in the database
+func (v ListView) setTaskParent(taskID, parentID string) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		if parentID == "" {
+			// Remove parent
+			_, err = v.db.Exec(`UPDATE tasks SET parent_id = NULL, updated_at = ? WHERE id = ?`,
+				time.Now(), taskID)
+		} else {
+			// Set parent
+			_, err = v.db.Exec(`UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?`,
+				parentID, time.Now(), taskID)
+		}
+		// Return taskUpdatedMsg to trigger reload
+		return taskUpdatedMsg{err: err}
+	}
+}
+
+// pushUndo adds an action to the undo stack and clears the redo stack
+func (v *ListView) pushUndo(action UndoAction) {
+	v.undoStack = append(v.undoStack, action)
+	// Limit stack size to prevent memory issues
+	if len(v.undoStack) > 50 {
+		v.undoStack = v.undoStack[1:]
+	}
+	// Clear redo stack when new action is performed
+	v.redoStack = nil
+}
+
+// undo reverts the last action
+func (v ListView) undo() (tea.Model, tea.Cmd) {
+	if len(v.undoStack) == 0 {
+		v.statusMsg = "Nothing to undo"
+		return v, nil
+	}
+
+	// Pop from undo stack
+	action := v.undoStack[len(v.undoStack)-1]
+	v.undoStack = v.undoStack[:len(v.undoStack)-1]
+
+	// Push to redo stack
+	v.redoStack = append(v.redoStack, action)
+
+	// Execute the undo
+	return v.executeUndo(action)
+}
+
+// redo reapplies the last undone action
+func (v ListView) redo() (tea.Model, tea.Cmd) {
+	if len(v.redoStack) == 0 {
+		v.statusMsg = "Nothing to redo"
+		return v, nil
+	}
+
+	// Pop from redo stack
+	action := v.redoStack[len(v.redoStack)-1]
+	v.redoStack = v.redoStack[:len(v.redoStack)-1]
+
+	// Push back to undo stack
+	v.undoStack = append(v.undoStack, action)
+
+	// Execute the redo
+	return v.executeRedo(action)
+}
+
+// executeUndo performs the undo for a given action
+func (v ListView) executeUndo(action UndoAction) (tea.Model, tea.Cmd) {
+	switch action.Type {
+	case UndoActionCreate:
+		// Undo create = delete the task
+		v.statusMsg = fmt.Sprintf("Undo: removed \"%s\"", action.Task.Title)
+		return v, v.deleteTaskByID(action.TaskID)
+
+	case UndoActionDelete:
+		// Undo delete = recreate the task
+		v.statusMsg = fmt.Sprintf("Undo: restored \"%s\"", action.Task.Title)
+		return v, v.restoreTask(action.Task)
+
+	case UndoActionUpdate:
+		// Undo update = restore old values
+		v.statusMsg = fmt.Sprintf("Undo: reverted \"%s\"", action.OldTask.Title)
+		return v, v.restoreTaskState(action.OldTask)
+
+	case UndoActionToggleStatus:
+		// Undo status toggle = restore old status
+		v.statusMsg = fmt.Sprintf("Undo: status reverted for \"%s\"", action.OldTask.Title)
+		return v, v.restoreTaskState(action.OldTask)
+
+	case UndoActionSetParent:
+		// Undo parent change = restore old parent
+		var oldParentID string
+		if action.OldTask != nil && action.OldTask.ParentID != nil {
+			oldParentID = *action.OldTask.ParentID
+		}
+		v.statusMsg = "Undo: parent reverted"
+		return v, v.setTaskParent(action.TaskID, oldParentID)
+	}
+
+	return v, nil
+}
+
+// executeRedo reapplies the action
+func (v ListView) executeRedo(action UndoAction) (tea.Model, tea.Cmd) {
+	switch action.Type {
+	case UndoActionCreate:
+		// Redo create = recreate the task
+		v.statusMsg = fmt.Sprintf("Redo: restored \"%s\"", action.Task.Title)
+		return v, v.restoreTask(action.Task)
+
+	case UndoActionDelete:
+		// Redo delete = delete again
+		v.statusMsg = fmt.Sprintf("Redo: removed \"%s\"", action.Task.Title)
+		return v, v.deleteTaskByID(action.TaskID)
+
+	case UndoActionUpdate:
+		// Redo update = apply new values
+		v.statusMsg = fmt.Sprintf("Redo: updated \"%s\"", action.NewTask.Title)
+		return v, v.restoreTaskState(action.NewTask)
+
+	case UndoActionToggleStatus:
+		// Redo status toggle = apply new status
+		v.statusMsg = fmt.Sprintf("Redo: status updated for \"%s\"", action.NewTask.Title)
+		return v, v.restoreTaskState(action.NewTask)
+
+	case UndoActionSetParent:
+		// Redo parent change = apply new parent
+		var newParentID string
+		if action.NewTask != nil && action.NewTask.ParentID != nil {
+			newParentID = *action.NewTask.ParentID
+		}
+		v.statusMsg = "Redo: parent updated"
+		return v, v.setTaskParent(action.TaskID, newParentID)
+	}
+
+	return v, nil
+}
+
+// deleteTaskByID deletes a task by ID (for undo of create)
+func (v ListView) deleteTaskByID(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := v.db.Exec(`DELETE FROM tasks WHERE id = ?`, taskID)
+		return taskDeletedMsg{ids: []string{taskID}, err: err}
+	}
+}
+
+// restoreTask recreates a deleted task
+func (v ListView) restoreTask(task *model.Task) tea.Cmd {
+	return func() tea.Msg {
+		var dueDate, completedAt interface{}
+		if task.DueDate != nil {
+			dueDate = task.DueDate.Format(time.RFC3339)
+		}
+		if task.CompletedAt != nil {
+			completedAt = task.CompletedAt.Format(time.RFC3339)
+		}
+
+		_, err := v.db.Exec(`
+			INSERT INTO tasks (id, title, description, status, priority, project_id, parent_id, due_date, completed_at, position, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, task.ID, task.Title, task.Description, task.Status, task.Priority,
+			task.ProjectID, task.ParentID, dueDate, completedAt, task.Position,
+			task.CreatedAt, time.Now())
+
+		return taskUpdatedMsg{err: err}
+	}
+}
+
+// restoreTaskState updates a task to match the given state
+func (v ListView) restoreTaskState(task *model.Task) tea.Cmd {
+	return func() tea.Msg {
+		var dueDate, completedAt interface{}
+		if task.DueDate != nil {
+			dueDate = task.DueDate.Format(time.RFC3339)
+		}
+		if task.CompletedAt != nil {
+			completedAt = task.CompletedAt.Format(time.RFC3339)
+		}
+
+		_, err := v.db.Exec(`
+			UPDATE tasks SET
+				title = ?, description = ?, status = ?, priority = ?,
+				project_id = ?, parent_id = ?, due_date = ?, completed_at = ?,
+				updated_at = ?
+			WHERE id = ?
+		`, task.Title, task.Description, task.Status, task.Priority,
+			task.ProjectID, task.ParentID, dueDate, completedAt,
+			time.Now(), task.ID)
+
+		return taskUpdatedMsg{err: err}
+	}
 }
 
 // View renders the list view
@@ -2128,6 +2758,12 @@ func (v ListView) View() string {
 	// Tag filter selector
 	if v.selectingTagFilter {
 		b.WriteString(v.renderTagFilterSelector())
+		b.WriteString("\n\n")
+	}
+
+	// Parent selector
+	if v.selectingParent {
+		b.WriteString(v.renderParentSelector())
 		b.WriteString("\n\n")
 	}
 
@@ -2321,27 +2957,45 @@ func (v ListView) renderProjectFilterSelector() string {
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Filter by project:"))
+
+	// Show search input if typing
+	if v.selectorSearch != "" {
+		searchStyle := lipgloss.NewStyle().Foreground(t.Info)
+		b.WriteString(" ")
+		b.WriteString(searchStyle.Render(v.selectorSearch))
+		b.WriteString(lipgloss.NewStyle().Foreground(t.Primary).Render("▎"))
+	}
 	b.WriteString("\n")
 
-	// "All" option at index 0
-	cursor := "  "
-	if v.selectorCursor == 0 {
-		cursor = "> "
-	}
-	allStyle := lipgloss.NewStyle().Foreground(t.Foreground)
-	if v.selectorCursor == 0 {
-		allStyle = allStyle.Bold(true)
-	}
-	checkMark := " "
-	if v.filterProjectID == "" {
-		checkMark = "●"
-	}
-	b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, checkMark, allStyle.Render("All Projects")))
+	filtered := v.getFilteredProjects()
+	hasAllOption := v.selectorSearch == ""
 
-	// Projects
-	for i, project := range v.projects {
+	// "All" option at index 0 (only when not searching)
+	if hasAllOption {
 		cursor := "  "
-		if i+1 == v.selectorCursor {
+		if v.selectorCursor == 0 {
+			cursor = "> "
+		}
+		allStyle := lipgloss.NewStyle().Foreground(t.Foreground)
+		if v.selectorCursor == 0 {
+			allStyle = allStyle.Bold(true)
+		}
+		checkMark := " "
+		if v.filterProjectID == "" {
+			checkMark = "●"
+		}
+		b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, checkMark, allStyle.Render("All Projects")))
+	}
+
+	// Filtered projects
+	for i, project := range filtered {
+		cursorIdx := i
+		if hasAllOption {
+			cursorIdx = i + 1 // Account for "All" option
+		}
+
+		cursor := "  "
+		if cursorIdx == v.selectorCursor {
 			cursor = "> "
 		}
 
@@ -2354,7 +3008,7 @@ func (v ListView) renderProjectFilterSelector() string {
 		if project.Color != "" {
 			projectStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(project.Color))
 		}
-		if i+1 == v.selectorCursor {
+		if cursorIdx == v.selectorCursor {
 			projectStyle = projectStyle.Bold(true)
 		}
 
@@ -2365,8 +3019,15 @@ func (v ListView) renderProjectFilterSelector() string {
 		b.WriteString("\n")
 	}
 
+	// Show "no matches" if filtered is empty while searching
+	if v.selectorSearch != "" && len(filtered) == 0 {
+		noMatchStyle := lipgloss.NewStyle().Foreground(t.Subtle).Italic(true)
+		b.WriteString(noMatchStyle.Render("  No matching projects"))
+		b.WriteString("\n")
+	}
+
 	hintStyle := lipgloss.NewStyle().Foreground(t.Subtle).Italic(true)
-	b.WriteString(hintStyle.Render("(Enter to select, Esc to cancel)"))
+	b.WriteString(hintStyle.Render("(Type to filter, Enter to select, Esc to cancel)"))
 
 	return b.String()
 }
@@ -2381,6 +3042,14 @@ func (v ListView) renderTagFilterSelector() string {
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Filter by tags (multi-select):"))
+
+	// Show search input if typing
+	if v.selectorSearch != "" {
+		searchStyle := lipgloss.NewStyle().Foreground(t.Info)
+		b.WriteString(" ")
+		b.WriteString(searchStyle.Render(v.selectorSearch))
+		b.WriteString(lipgloss.NewStyle().Foreground(t.Primary).Render("▎"))
+	}
 	b.WriteString("\n")
 
 	// Build set of currently filtered tag IDs
@@ -2389,21 +3058,31 @@ func (v ListView) renderTagFilterSelector() string {
 		filterTagIDSet[id] = true
 	}
 
-	// "Clear" option at index 0
-	cursor := "  "
-	if v.selectorCursor == 0 {
-		cursor = "> "
-	}
-	clearStyle := lipgloss.NewStyle().Foreground(t.Foreground)
-	if v.selectorCursor == 0 {
-		clearStyle = clearStyle.Bold(true)
-	}
-	b.WriteString(fmt.Sprintf("%s  %s\n", cursor, clearStyle.Render("Clear tag filters")))
+	filtered := v.getFilteredTags()
+	hasClearOption := v.selectorSearch == ""
 
-	// Tags
-	for i, tag := range v.tags {
+	// "Clear" option at index 0 (only when not searching)
+	if hasClearOption {
 		cursor := "  "
-		if i+1 == v.selectorCursor {
+		if v.selectorCursor == 0 {
+			cursor = "> "
+		}
+		clearStyle := lipgloss.NewStyle().Foreground(t.Foreground)
+		if v.selectorCursor == 0 {
+			clearStyle = clearStyle.Bold(true)
+		}
+		b.WriteString(fmt.Sprintf("%s  %s\n", cursor, clearStyle.Render("Clear tag filters")))
+	}
+
+	// Filtered tags
+	for i, tag := range filtered {
+		cursorIdx := i
+		if hasClearOption {
+			cursorIdx = i + 1 // Account for "Clear" option
+		}
+
+		cursor := "  "
+		if cursorIdx == v.selectorCursor {
 			cursor = "> "
 		}
 
@@ -2417,7 +3096,7 @@ func (v ListView) renderTagFilterSelector() string {
 		if tag.Color != "" {
 			tagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(tag.Color))
 		}
-		if i+1 == v.selectorCursor {
+		if cursorIdx == v.selectorCursor {
 			tagStyle = tagStyle.Bold(true)
 		}
 
@@ -2428,8 +3107,108 @@ func (v ListView) renderTagFilterSelector() string {
 		b.WriteString("\n")
 	}
 
+	// Show "no matches" if filtered is empty while searching
+	if v.selectorSearch != "" && len(filtered) == 0 {
+		noMatchStyle := lipgloss.NewStyle().Foreground(t.Subtle).Italic(true)
+		b.WriteString(noMatchStyle.Render("  No matching tags"))
+		b.WriteString("\n")
+	}
+
 	hintStyle := lipgloss.NewStyle().Foreground(t.Subtle).Italic(true)
-	b.WriteString(hintStyle.Render("(Enter/Space to toggle, Esc to close)"))
+	b.WriteString(hintStyle.Render("(Type to filter, Enter/Space to toggle, Esc to close)"))
+
+	return b.String()
+}
+
+// renderParentSelector renders the parent task selection popup
+func (v ListView) renderParentSelector() string {
+	t := theme.Current.Theme
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(t.Primary).
+		Bold(true)
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Set parent task:"))
+
+	// Show search input if typing
+	if v.selectorSearch != "" {
+		searchStyle := lipgloss.NewStyle().Foreground(t.Info)
+		b.WriteString(" ")
+		b.WriteString(searchStyle.Render(v.selectorSearch))
+		b.WriteString(lipgloss.NewStyle().Foreground(t.Primary).Render("▎"))
+	}
+	b.WriteString("\n")
+
+	// Check if current task has a parent
+	var currentTask model.Task
+	for _, task := range v.tasks {
+		if task.ID == v.parentTaskID {
+			currentTask = task
+			break
+		}
+	}
+	hasRemoveOption := v.selectorSearch == "" && currentTask.ParentID != nil
+
+	filtered := v.getFilteredParentCandidates()
+
+	// "Remove parent" option at index 0 (only if task has a parent and not searching)
+	if hasRemoveOption {
+		cursor := "  "
+		if v.selectorCursor == 0 {
+			cursor = "> "
+		}
+		removeStyle := lipgloss.NewStyle().Foreground(t.Warning)
+		if v.selectorCursor == 0 {
+			removeStyle = removeStyle.Bold(true)
+		}
+		b.WriteString(fmt.Sprintf("%s%s\n", cursor, removeStyle.Render("Remove parent (make top-level)")))
+	}
+
+	// Parent candidates
+	for i, task := range filtered {
+		cursorIdx := i
+		if hasRemoveOption {
+			cursorIdx = i + 1
+		}
+
+		cursor := "  "
+		if cursorIdx == v.selectorCursor {
+			cursor = "> "
+		}
+
+		taskStyle := lipgloss.NewStyle().Foreground(t.Foreground)
+		if cursorIdx == v.selectorCursor {
+			taskStyle = taskStyle.Bold(true)
+		}
+
+		// Show project info if available
+		projectInfo := ""
+		if task.ProjectID != nil && *task.ProjectID != "" && *task.ProjectID != "inbox" {
+			for _, p := range v.projects {
+				if p.ID == *task.ProjectID {
+					projectStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(p.Color))
+					projectInfo = " " + projectStyle.Render("#"+p.Name)
+					break
+				}
+			}
+		}
+
+		b.WriteString(cursor)
+		b.WriteString(taskStyle.Render(task.Title))
+		b.WriteString(projectInfo)
+		b.WriteString("\n")
+	}
+
+	// Show "no matches" if filtered is empty while searching
+	if v.selectorSearch != "" && len(filtered) == 0 {
+		noMatchStyle := lipgloss.NewStyle().Foreground(t.Subtle).Italic(true)
+		b.WriteString(noMatchStyle.Render("  No matching tasks"))
+		b.WriteString("\n")
+	}
+
+	hintStyle := lipgloss.NewStyle().Foreground(t.Subtle).Italic(true)
+	b.WriteString(hintStyle.Render("(Type to filter, Enter to select, Esc to cancel)"))
 
 	return b.String()
 }
@@ -2768,17 +3547,40 @@ func (v ListView) loadTasks() tea.Msg {
 }
 
 func (v ListView) createTask(title string) tea.Cmd {
+	// Use filtered project and tags if active
+	projectID := v.filterProjectID
+	tagIDs := make([]string, len(v.filterTagIDs))
+	copy(tagIDs, v.filterTagIDs)
+
 	return func() tea.Msg {
 		id := uuid.New().String()
 		now := time.Now()
 
-		_, err := v.db.Exec(`
-			INSERT INTO tasks (id, title, status, priority, created_at, updated_at)
-			VALUES (?, ?, 'pending', 'medium', ?, ?)
-		`, id, title, now, now)
+		var err error
+		if projectID != "" {
+			_, err = v.db.Exec(`
+				INSERT INTO tasks (id, title, status, priority, project_id, created_at, updated_at)
+				VALUES (?, ?, 'pending', 'medium', ?, ?, ?)
+			`, id, title, projectID, now, now)
+		} else {
+			_, err = v.db.Exec(`
+				INSERT INTO tasks (id, title, status, priority, created_at, updated_at)
+				VALUES (?, ?, 'pending', 'medium', ?, ?)
+			`, id, title, now, now)
+		}
 
 		if err != nil {
 			return taskCreatedMsg{err: err}
+		}
+
+		// Add filtered tags to the new task
+		for _, tagID := range tagIDs {
+			v.db.Exec(`INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)`, id, tagID)
+		}
+
+		var projPtr *string
+		if projectID != "" {
+			projPtr = &projectID
 		}
 
 		return taskCreatedMsg{task: model.Task{
@@ -2786,6 +3588,7 @@ func (v ListView) createTask(title string) tea.Cmd {
 			Title:     title,
 			Status:    model.StatusPending,
 			Priority:  model.PriorityMedium,
+			ProjectID: projPtr,
 			CreatedAt: now,
 			UpdatedAt: now,
 		}}

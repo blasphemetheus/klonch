@@ -407,15 +407,13 @@ func (m RootModel) renderFooter() string {
 				key("enter", "edit") + sep +
 				key("tab", "done") + sep +
 				key("d", "del") + sep +
-				key("space", "select") + sep +
-				key("/", "search") + sep +
+				key("^z/^y", "undo") + sep +
 				key(":", "cmd")
 			// Secondary actions
 			line2 = key("p", "priority") + sep +
 				key("m", "move") + sep +
 				key("t", "tag") + sep +
-				key("f", "focus") + sep +
-				key("1-8", "views") + sep +
+				key("s/P", "sub/parent") + sep +
 				key("?", "help")
 		}
 
@@ -562,7 +560,6 @@ func (m RootModel) renderHelp(height int) string {
 	navKeys := [][]string{
 		{"↑/k ↓/j", "Navigate up/down"},
 		{"g / G", "Go to top/bottom"},
-		{"PgUp/PgDn", "Page up/down"},
 	}
 	for _, kv := range navKeys {
 		b.WriteString(keyStyle.Render(kv[0]))
@@ -575,7 +572,6 @@ func (m RootModel) renderHelp(height int) string {
 	b.WriteString("\n")
 	selKeys := [][]string{
 		{"space", "Toggle selection"},
-		{"v", "Enter multi-select mode"},
 		{"V", "Select all visible"},
 		{"esc", "Clear selection"},
 	}
@@ -596,8 +592,46 @@ func (m RootModel) renderHelp(height int) string {
 		{"p", "Cycle priority"},
 		{"m", "Move to project"},
 		{"t", "Add/remove tags"},
+		{"b", "Set dependency (blocked by)"},
+		{"f", "Focus mode"},
+		{"r", "Refresh tasks"},
+		{"ctrl+z", "Undo"},
+		{"ctrl+y", "Redo"},
 	}
 	for _, kv := range actionKeys {
+		b.WriteString(keyStyle.Render(kv[0]))
+		b.WriteString(descStyle.Render(kv[1]))
+		b.WriteString("\n")
+	}
+
+	// Subtasks section
+	b.WriteString(sectionStyle.Render("Subtasks"))
+	b.WriteString("\n")
+	subtaskKeys := [][]string{
+		{"s", "Add subtask to selected task"},
+		{"P", "Make task a subtask of another"},
+		{"o", "Toggle expand/collapse subtasks"},
+		{"E", "Expand all subtasks"},
+		{"C", "Collapse all subtasks"},
+	}
+	for _, kv := range subtaskKeys {
+		b.WriteString(keyStyle.Render(kv[0]))
+		b.WriteString(descStyle.Render(kv[1]))
+		b.WriteString("\n")
+	}
+
+	// Filtering section
+	b.WriteString(sectionStyle.Render("Filtering"))
+	b.WriteString("\n")
+	filterKeys := [][]string{
+		{"/", "Text search"},
+		{"M", "Filter by project"},
+		{"T", "Filter by tag(s)"},
+		{"A", "Toggle active/all tasks"},
+		{"H", "Cycle views (all/active/recent)"},
+		{"esc", "Clear filters"},
+	}
+	for _, kv := range filterKeys {
 		b.WriteString(keyStyle.Render(kv[0]))
 		b.WriteString(descStyle.Render(kv[1]))
 		b.WriteString("\n")
@@ -608,7 +642,6 @@ func (m RootModel) renderHelp(height int) string {
 	b.WriteString("\n")
 	viewKeys := [][]string{
 		{"1-8", "Switch views (list, kanban, eisenhower...)"},
-		{"/", "Search/filter tasks"},
 		{":", "Command palette"},
 		{"?", "Toggle this help"},
 	}
@@ -635,16 +668,66 @@ func (m RootModel) renderHelp(height int) string {
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("Command Palette (:)"))
 	b.WriteString("\n")
-	commands := [][]string{
-		{":due <date>", "Set due date (tomorrow, friday, 2024-01-15)"},
-		{":priority <p>", "Set priority (low, medium, high, urgent)"},
+
+	// Task commands
+	b.WriteString(sectionStyle.Render("Task Commands"))
+	b.WriteString("\n")
+	taskCmds := [][]string{
+		{":due <date>", "Set due date (tomorrow, fri, 2024-01-15)"},
+		{":priority <p>", "Set priority (low/medium/high/urgent)"},
 		{":tag <name>", "Add tag to task(s)"},
 		{":project <name>", "Move to project"},
+		{":parent", "Set parent task"},
 		{":done", "Toggle done status"},
 		{":archive", "Archive task(s)"},
-		{":theme <name>", "Change theme (nord, dracula, gruvbox...)"},
 	}
-	for _, kv := range commands {
+	for _, kv := range taskCmds {
+		b.WriteString(cmdKeyStyle.Render(kv[0]))
+		b.WriteString(descStyle.Render(kv[1]))
+		b.WriteString("\n")
+	}
+
+	// Filter commands
+	b.WriteString(sectionStyle.Render("Filter Commands"))
+	b.WriteString("\n")
+	filterCmds := [][]string{
+		{":filter <text>", "Text search"},
+		{":filterproject", "Filter by project"},
+		{":filtertag", "Filter by tag(s)"},
+		{":sort <field>", "Sort by priority/due/title/status"},
+		{":clear", "Clear all filters"},
+	}
+	for _, kv := range filterCmds {
+		b.WriteString(cmdKeyStyle.Render(kv[0]))
+		b.WriteString(descStyle.Render(kv[1]))
+		b.WriteString("\n")
+	}
+
+	// Management commands
+	b.WriteString(sectionStyle.Render("Management Commands"))
+	b.WriteString("\n")
+	mgmtCmds := [][]string{
+		{":newproject <n>", "Create new project"},
+		{":newtag <name>", "Create new tag"},
+		{":projects", "List all projects"},
+		{":tags", "List all tags"},
+		{":theme <name>", "Change theme"},
+	}
+	for _, kv := range mgmtCmds {
+		b.WriteString(cmdKeyStyle.Render(kv[0]))
+		b.WriteString(descStyle.Render(kv[1]))
+		b.WriteString("\n")
+	}
+
+	// Time tracking commands
+	b.WriteString(sectionStyle.Render("Time Tracking"))
+	b.WriteString("\n")
+	timeCmds := [][]string{
+		{":starttime", "Start time tracking"},
+		{":stoptime", "Stop time tracking"},
+		{":addtime <dur>", "Log time (30m, 1h30m)"},
+	}
+	for _, kv := range timeCmds {
 		b.WriteString(cmdKeyStyle.Render(kv[0]))
 		b.WriteString(descStyle.Render(kv[1]))
 		b.WriteString("\n")
