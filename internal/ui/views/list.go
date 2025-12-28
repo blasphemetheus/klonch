@@ -585,6 +585,35 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case "E":
+		// Expand all tasks with subtasks
+		count := 0
+		for _, task := range v.allTasks {
+			if len(task.Subtasks) > 0 {
+				v.expanded[task.ID] = true
+				count++
+			}
+		}
+		if count > 0 {
+			v.tasks = v.flattenTasks(v.allTasks)
+			v.statusMsg = fmt.Sprintf("Expanded %d tasks", count)
+		} else {
+			v.statusMsg = "No tasks with subtasks"
+		}
+		return v, nil
+
+	case "C":
+		// Collapse all expanded tasks
+		if len(v.expanded) > 0 {
+			count := len(v.expanded)
+			v.expanded = make(map[string]bool)
+			v.tasks = v.flattenTasks(v.allTasks)
+			v.statusMsg = fmt.Sprintf("Collapsed %d tasks", count)
+		} else {
+			v.statusMsg = "Nothing to collapse"
+		}
+		return v, nil
+
 	case "b":
 		// Manage dependencies (blocked by)
 		if len(v.tasks) > 0 {
