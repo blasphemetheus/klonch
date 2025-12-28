@@ -77,6 +77,10 @@ klonch --theme dracula
 | `p` | Cycle priority |
 | `m` | Move to project |
 | `t` | Toggle tag on task |
+| `o` | Toggle expand subtasks |
+| `E` | Expand all subtasks |
+| `C` | Collapse all subtasks |
+| `f` | Focus on task |
 
 ### Filtering
 
