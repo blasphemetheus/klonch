@@ -184,6 +184,9 @@ type focusLoadedMsg struct {
 }
 type focusTickMsg struct{}
 
+// BackToListMsg requests returning to list view from focus
+type BackToListMsg struct{}
+
 // tickCmd sends tick messages every second
 func focusTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -273,6 +276,9 @@ func (v FocusView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "p": // Cycle priority
 			return v, v.cyclePriority()
+
+		case "esc", "q": // Return to list view
+			return v, func() tea.Msg { return BackToListMsg{} }
 		}
 	}
 

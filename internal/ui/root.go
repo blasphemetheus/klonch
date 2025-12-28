@@ -213,6 +213,27 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.focusView = m.focusView.SetTask(&msg.Task)
 		m.currentView = ViewFocus
 		return m, m.focusView.Init()
+
+	case views.BackToListMsg:
+		// Return from focus view to list view
+		m.currentView = ViewList
+		return m, m.listView.Init()
+
+	case SwitchViewMsg:
+		m.currentView = msg.View
+		switch msg.View {
+		case ViewList:
+			return m, m.listView.Init()
+		case ViewKanban:
+			return m, m.kanbanView.Init()
+		case ViewEisenhower:
+			return m, m.eisenhowerView.Init()
+		case ViewCalendar:
+			return m, m.calendarView.Init()
+		case ViewStats:
+			return m, m.statsView.Init()
+		}
+		return m, nil
 	}
 
 	// Delegate to current view
