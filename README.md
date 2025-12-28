@@ -38,8 +38,16 @@ go build -o klonch ./cmd/klonch
 klonch add "Review pull request"
 
 # Add with project, tags, priority, and due date
-klonch add "Fix login bug @work @urgent !high due:tomorrow"
+klonch add "Fix login bug #work @urgent !high due:tomorrow"
 ```
+
+**Quick Add Syntax:**
+| Prefix | Example | Description |
+|--------|---------|-------------|
+| `#` | `#work` | Assign to project (creates if needed) |
+| `@` | `@urgent` | Add tag |
+| `!` | `!high` | Set priority (low/medium/high/urgent) |
+| `due:` | `due:tomorrow` | Set due date |
 
 ### Interactive TUI
 
