@@ -174,10 +174,12 @@ type ListView struct {
 	tasks    []model.Task    // Flattened tasks for display (includes expanded subtasks)
 	projects []model.Project // All projects
 	tags     []model.Tag     // All tags
-	cursor   int
-	selected map[string]bool   // Selected task IDs
-	expanded map[string]bool   // Tasks with expanded subtasks
-	blocked  map[string]bool   // Tasks with incomplete dependencies
+	cursor       int
+	scrollOffset int               // First visible task index
+	selected     map[string]bool   // Selected task IDs
+	expanded     map[string]bool   // Tasks with expanded subtasks
+	blocked      map[string]bool   // Tasks with incomplete dependencies
+	textWrap     bool              // Whether to wrap long task titles
 
 	mode           ListMode
 	input          textinput.Model
@@ -279,6 +281,43 @@ func (v ListView) SetSize(width, height int) ListView {
 	v.height = height
 	v.input.Width = width - 4
 	return v
+}
+
+// visibleTaskCount returns how many tasks can fit in the viewport
+func (v ListView) visibleTaskCount() int {
+	// Reserve lines for status message, empty state, etc.
+	available := v.height - 4
+	if available < 1 {
+		available = 1
+	}
+	return available
+}
+
+// ensureCursorVisible adjusts scrollOffset to keep cursor in view
+func (v *ListView) ensureCursorVisible() {
+	visible := v.visibleTaskCount()
+
+	// Cursor above viewport - scroll up
+	if v.cursor < v.scrollOffset {
+		v.scrollOffset = v.cursor
+	}
+
+	// Cursor below viewport - scroll down
+	if v.cursor >= v.scrollOffset+visible {
+		v.scrollOffset = v.cursor - visible + 1
+	}
+
+	// Clamp scrollOffset
+	if v.scrollOffset < 0 {
+		v.scrollOffset = 0
+	}
+	maxOffset := len(v.tasks) - visible
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if v.scrollOffset > maxOffset {
+		v.scrollOffset = maxOffset
+	}
 }
 
 // Update handles messages for the list view
@@ -449,6 +488,7 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if v.cursor > 0 {
 			oldCursor := v.cursor
 			v.cursor--
+			v.ensureCursorVisible()
 			if cmd := v.checkDeferredResort(oldCursor); cmd != nil {
 				return v, cmd
 			}
@@ -457,6 +497,7 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if v.cursor < len(v.tasks)-1 {
 			oldCursor := v.cursor
 			v.cursor++
+			v.ensureCursorVisible()
 			if cmd := v.checkDeferredResort(oldCursor); cmd != nil {
 				return v, cmd
 			}
@@ -464,14 +505,50 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		oldCursor := v.cursor
 		v.cursor = 0
+		v.ensureCursorVisible()
 		if cmd := v.checkDeferredResort(oldCursor); cmd != nil {
 			return v, cmd
 		}
 	case "G":
 		oldCursor := v.cursor
 		v.cursor = max(0, len(v.tasks)-1)
+		v.ensureCursorVisible()
 		if cmd := v.checkDeferredResort(oldCursor); cmd != nil {
 			return v, cmd
+		}
+	case "pgup", "ctrl+u":
+		// Page up - move cursor up by half a page
+		if len(v.tasks) > 0 {
+			oldCursor := v.cursor
+			pageSize := v.visibleTaskCount() / 2
+			if pageSize < 1 {
+				pageSize = 1
+			}
+			v.cursor -= pageSize
+			if v.cursor < 0 {
+				v.cursor = 0
+			}
+			v.ensureCursorVisible()
+			if cmd := v.checkDeferredResort(oldCursor); cmd != nil {
+				return v, cmd
+			}
+		}
+	case "pgdown", "ctrl+d":
+		// Page down - move cursor down by half a page
+		if len(v.tasks) > 0 {
+			oldCursor := v.cursor
+			pageSize := v.visibleTaskCount() / 2
+			if pageSize < 1 {
+				pageSize = 1
+			}
+			v.cursor += pageSize
+			if v.cursor >= len(v.tasks) {
+				v.cursor = len(v.tasks) - 1
+			}
+			v.ensureCursorVisible()
+			if cmd := v.checkDeferredResort(oldCursor); cmd != nil {
+				return v, cmd
+			}
 		}
 
 	// Selection
@@ -811,6 +888,16 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.statusMsg = "View: Active tasks only"
 		}
 		v.applyFilter()
+		return v, nil
+
+	case "w":
+		// Toggle text wrap
+		v.textWrap = !v.textWrap
+		if v.textWrap {
+			v.statusMsg = "Text wrap: ON"
+		} else {
+			v.statusMsg = "Text wrap: OFF"
+		}
 		return v, nil
 
 	case "ctrl+z":
@@ -1879,6 +1966,9 @@ func (v *ListView) applyFilter() {
 	if v.cursor >= len(v.tasks) {
 		v.cursor = max(0, len(v.tasks)-1)
 	}
+
+	// Ensure cursor is visible in viewport
+	v.ensureCursorVisible()
 }
 
 // matchesFilter returns true if task matches the search filter
@@ -2776,8 +2866,14 @@ func (v ListView) View() string {
 		b.WriteString("\n\n")
 	}
 
+	// Only show task list if no selector is active
+	selectorActive := v.selectingProject || v.selectingTag || v.selectingDep ||
+		v.selectingProjectFilter || v.selectingTagFilter || v.selectingParent
+
 	// Task list
-	if len(v.tasks) == 0 {
+	if selectorActive {
+		// Don't render task list when selector is open
+	} else if len(v.tasks) == 0 {
 		emptyStyle := lipgloss.NewStyle().
 			Foreground(t.Subtle).
 			Italic(true).
@@ -2788,9 +2884,32 @@ func (v ListView) View() string {
 			b.WriteString(emptyStyle.Render("No tasks. Press 'a' to add one."))
 		}
 	} else {
-		for i, task := range v.tasks {
+		visible := v.visibleTaskCount()
+		endIdx := v.scrollOffset + visible
+		if endIdx > len(v.tasks) {
+			endIdx = len(v.tasks)
+		}
+
+		// Show scroll indicator if there are tasks above
+		if v.scrollOffset > 0 {
+			scrollStyle := lipgloss.NewStyle().Foreground(t.Subtle)
+			b.WriteString(scrollStyle.Render(fmt.Sprintf("  ↑ %d more above", v.scrollOffset)))
+			b.WriteString("\n")
+		}
+
+		// Render visible tasks
+		for i := v.scrollOffset; i < endIdx; i++ {
+			task := v.tasks[i]
 			line := v.renderTask(task, i == v.cursor, v.selected[task.ID])
 			b.WriteString(line)
+			b.WriteString("\n")
+		}
+
+		// Show scroll indicator if there are tasks below
+		remaining := len(v.tasks) - endIdx
+		if remaining > 0 {
+			scrollStyle := lipgloss.NewStyle().Foreground(t.Subtle)
+			b.WriteString(scrollStyle.Render(fmt.Sprintf("  ↓ %d more below", remaining)))
 			b.WriteString("\n")
 		}
 	}
@@ -3315,42 +3434,116 @@ func (v ListView) renderTask(task model.Task, isCursor, isSelected bool) string 
 		dueStr = dueStyle.Render(formatDate(*task.DueDate))
 	}
 
-	// Build line
-	line := fmt.Sprintf("%s%s%s %s %s %s",
+	// Build metadata suffix
+	var metadata []string
+	if projectStr != "" {
+		metadata = append(metadata, projectStr)
+	}
+	if tagsStr != "" {
+		metadata = append(metadata, tagsStr)
+	}
+	if dueStr != "" {
+		metadata = append(metadata, dueStr)
+	}
+	if v.blocked[task.ID] {
+		blockedStyle := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
+		metadata = append(metadata, blockedStyle.Render("⊘ BLOCKED"))
+	} else if len(task.Dependencies) > 0 {
+		depStyle := lipgloss.NewStyle().Foreground(t.Subtle)
+		metadata = append(metadata, depStyle.Render("⦿"))
+	}
+	metadataStr := strings.Join(metadata, " ")
+
+	// Calculate prefix for the line
+	prefix := fmt.Sprintf("%s%s%s %s %s ",
 		indent,
 		selectIndicator,
 		expandIndicator,
 		checkbox,
 		priority,
-		titleStyle.Render(title),
 	)
+	prefixWidth := lipgloss.Width(prefix)
 
-	if projectStr != "" {
-		line += " " + projectStr
-	}
-	if tagsStr != "" {
-		line += " " + tagsStr
-	}
-	if dueStr != "" {
-		line += " " + dueStr
+	// Build line based on wrap mode
+	var line string
+	if v.textWrap && v.width > 0 {
+		// Calculate available width for title
+		metadataWidth := 0
+		if metadataStr != "" {
+			metadataWidth = lipgloss.Width(metadataStr) + 1 // +1 for space
+		}
+		availableWidth := v.width - prefixWidth - metadataWidth
+		if availableWidth < 20 {
+			availableWidth = 20 // Minimum width for title
+		}
+
+		// Wrap title if needed
+		wrappedTitle := wrapText(title, availableWidth)
+		titleLines := strings.Split(wrappedTitle, "\n")
+
+		// Build first line with metadata
+		line = prefix + titleStyle.Render(titleLines[0])
+		if metadataStr != "" {
+			line += " " + metadataStr
+		}
+
+		// Add continuation lines with proper indentation
+		if len(titleLines) > 1 {
+			continuationIndent := strings.Repeat(" ", prefixWidth)
+			for _, tl := range titleLines[1:] {
+				line += "\n" + continuationIndent + titleStyle.Render(tl)
+			}
+		}
+	} else {
+		// No wrap - single line
+		line = prefix + titleStyle.Render(title)
+		if metadataStr != "" {
+			line += " " + metadataStr
+		}
 	}
 
-	// Blocked indicator
-	if v.blocked[task.ID] {
-		blockedStyle := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
-		line += " " + blockedStyle.Render("⊘ BLOCKED")
-	} else if len(task.Dependencies) > 0 {
-		// Has dependencies but they're all complete
-		depStyle := lipgloss.NewStyle().Foreground(t.Subtle)
-		line += " " + depStyle.Render("⦿")
-	}
-
-	// Highlight cursor line
+	// Highlight cursor line(s)
 	if isCursor {
-		line = styles.TaskFocused.Render(line)
+		// For multi-line, highlight each line
+		if strings.Contains(line, "\n") {
+			lines := strings.Split(line, "\n")
+			for i, l := range lines {
+				lines[i] = styles.TaskFocused.Render(l)
+			}
+			line = strings.Join(lines, "\n")
+		} else {
+			line = styles.TaskFocused.Render(line)
+		}
 	}
 
 	return line
+}
+
+// wrapText wraps text at word boundaries to fit within maxWidth
+func wrapText(text string, maxWidth int) string {
+	if maxWidth <= 0 || len(text) <= maxWidth {
+		return text
+	}
+
+	var result strings.Builder
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return text
+	}
+
+	currentLine := words[0]
+	for _, word := range words[1:] {
+		if len(currentLine)+1+len(word) <= maxWidth {
+			currentLine += " " + word
+		} else {
+			result.WriteString(currentLine)
+			result.WriteString("\n")
+			currentLine = word
+		}
+	}
+	result.WriteString(currentLine)
+
+	return result.String()
 }
 
 // Database commands

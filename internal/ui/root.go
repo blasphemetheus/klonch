@@ -560,6 +560,7 @@ func (m RootModel) renderHelp(height int) string {
 	navKeys := [][]string{
 		{"↑/k ↓/j", "Navigate up/down"},
 		{"g / G", "Go to top/bottom"},
+		{"^u / ^d", "Page up/down"},
 	}
 	for _, kv := range navKeys {
 		b.WriteString(keyStyle.Render(kv[0]))
@@ -629,6 +630,7 @@ func (m RootModel) renderHelp(height int) string {
 		{"T", "Filter by tag(s)"},
 		{"A", "Toggle active/all tasks"},
 		{"H", "Cycle views (all/active/recent)"},
+		{"w", "Toggle text wrap"},
 		{"esc", "Clear filters"},
 	}
 	for _, kv := range filterKeys {
