@@ -76,7 +76,8 @@ TUI Keybindings:
                 Space         Toggle selection
 
   Tasks:        a             Add task
-                s             Add subtask
+                s             Add subtask (sibling if on subtask)
+                S             Add child subtask (nested)
                 Enter         Edit
                 Tab           Toggle done
                 d             Delete

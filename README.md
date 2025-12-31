@@ -78,7 +78,8 @@ klonch --theme dracula
 | Key | Action |
 |-----|--------|
 | `a` | Add new task |
-| `s` | Add subtask |
+| `s` | Add subtask (sibling if on subtask) |
+| `S` | Add child subtask (nested) |
 | `Enter` | Edit task |
 | `Tab` | Toggle done |
 | `d` | Delete task |

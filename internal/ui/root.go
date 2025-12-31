@@ -609,7 +609,8 @@ func (m RootModel) renderHelp(height int) string {
 	b.WriteString(sectionStyle.Render("Subtasks"))
 	b.WriteString("\n")
 	subtaskKeys := [][]string{
-		{"s", "Add subtask to selected task"},
+		{"s", "Add subtask (or sibling if on subtask)"},
+		{"S", "Add child subtask (nested)"},
 		{"P", "Make task a subtask of another"},
 		{"o", "Toggle expand/collapse subtasks"},
 		{"E", "Expand all subtasks"},

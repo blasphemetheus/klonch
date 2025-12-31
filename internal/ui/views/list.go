@@ -179,6 +179,7 @@ type ListView struct {
 	selected     map[string]bool   // Selected task IDs
 	expanded     map[string]bool   // Tasks with expanded subtasks
 	blocked      map[string]bool   // Tasks with incomplete dependencies
+	taskDepth    map[string]int    // Depth level of each task (0 = top-level)
 	textWrap     bool              // Whether to wrap long task titles
 
 	mode           ListMode
@@ -246,11 +247,12 @@ func NewListView(database *db.DB) ListView {
 	ti.CharLimit = 256
 
 	return ListView{
-		db:       database,
-		selected: make(map[string]bool),
-		expanded: make(map[string]bool),
-		blocked:  make(map[string]bool),
-		input:    ti,
+		db:        database,
+		selected:  make(map[string]bool),
+		expanded:  make(map[string]bool),
+		blocked:   make(map[string]bool),
+		taskDepth: make(map[string]int),
+		input:     ti,
 	}
 }
 
@@ -762,18 +764,35 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case "s":
-		// Add subtask
+		// Add subtask (or sibling subtask if on a subtask)
 		if len(v.tasks) > 0 {
 			task := v.tasks[v.cursor]
-			// Can't add subtask to a subtask (only one level of nesting)
+			v.mode = ListModeAddSubtask
 			if task.ParentID != nil {
-				v.statusMsg = "Cannot create nested subtasks (only one level allowed)"
-				return v, nil
+				// On a subtask: add sibling subtask (same parent)
+				v.parentID = *task.ParentID
+				v.input.Placeholder = "New sibling subtask..."
+			} else {
+				// On a parent task: add child subtask
+				v.parentID = task.ID
+				v.input.Placeholder = "New subtask..."
+				// Auto-expand the parent task
+				v.expanded[task.ID] = true
 			}
+			v.input.SetValue("")
+			v.input.Focus()
+			return v, textinput.Blink
+		}
+		return v, nil
+
+	case "S":
+		// Add child subtask (works on any task including subtasks)
+		if len(v.tasks) > 0 {
+			task := v.tasks[v.cursor]
 			v.mode = ListModeAddSubtask
 			v.parentID = task.ID
 			v.input.SetValue("")
-			v.input.Placeholder = "New subtask..."
+			v.input.Placeholder = "New child subtask..."
 			v.input.Focus()
 			// Auto-expand the parent task
 			v.expanded[task.ID] = true
@@ -785,11 +804,11 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Toggle expand/collapse subtasks
 		if len(v.tasks) > 0 {
 			task := v.tasks[v.cursor]
-			// Only toggle for parent tasks (not subtasks themselves)
-			if task.ParentID == nil && len(task.Subtasks) > 0 {
+			// Toggle for any task with subtasks
+			if len(task.Subtasks) > 0 {
 				v.expanded[task.ID] = !v.expanded[task.ID]
 				v.applyFilter()
-			} else if len(task.Subtasks) == 0 && task.ParentID == nil {
+			} else {
 				v.statusMsg = "No subtasks to expand"
 			}
 		}
@@ -2410,22 +2429,64 @@ func (v *ListView) toggleTagFilter(tag model.Tag) {
 }
 
 // getParentCandidates returns valid parent tasks for the given task
-// A task cannot be its own parent, cannot be a parent of a task that has subtasks,
-// and subtasks cannot be parents (only one level of nesting)
+// A task cannot be its own parent, and cannot be a descendant (to prevent cycles)
 func (v ListView) getParentCandidates(taskID string) []model.Task {
+	// Collect all descendants of this task (to prevent cycles)
+	descendants := make(map[string]bool)
+	v.collectDescendants(taskID, descendants)
+
 	var candidates []model.Task
-	for _, t := range v.allTasks {
+	// Flatten all tasks to include subtasks
+	v.collectAllTasksRecursive(v.allTasks, &candidates)
+
+	// Filter out invalid candidates
+	var valid []model.Task
+	for _, t := range candidates {
 		// Skip the task itself
 		if t.ID == taskID {
 			continue
 		}
-		// Skip tasks that are already subtasks (only one level of nesting)
-		if t.ParentID != nil {
+		// Skip descendants (prevents cycles)
+		if descendants[t.ID] {
 			continue
 		}
-		candidates = append(candidates, t)
+		valid = append(valid, t)
 	}
-	return candidates
+	return valid
+}
+
+// collectDescendants collects all descendant IDs of a task
+func (v ListView) collectDescendants(taskID string, descendants map[string]bool) {
+	// Find the task and collect its subtasks recursively
+	var findAndCollect func(tasks []model.Task)
+	findAndCollect = func(tasks []model.Task) {
+		for _, t := range tasks {
+			if t.ID == taskID {
+				// Found the task, collect all its subtasks
+				v.collectSubtaskIDs(t.Subtasks, descendants)
+				return
+			}
+			// Recurse into subtasks
+			findAndCollect(t.Subtasks)
+		}
+	}
+	findAndCollect(v.allTasks)
+}
+
+// collectSubtaskIDs recursively collects all subtask IDs
+func (v ListView) collectSubtaskIDs(subtasks []model.Task, ids map[string]bool) {
+	for _, st := range subtasks {
+		ids[st.ID] = true
+		v.collectSubtaskIDs(st.Subtasks, ids)
+	}
+}
+
+// collectAllTasksRecursive flattens the task hierarchy into a single slice
+func (v ListView) collectAllTasksRecursive(tasks []model.Task, result *[]model.Task) {
+	for _, t := range tasks {
+		*result = append(*result, t)
+		v.collectAllTasksRecursive(t.Subtasks, result)
+	}
 }
 
 // getFilteredParentCandidates returns parent candidates matching the search
@@ -3337,15 +3398,13 @@ func (v ListView) renderTask(task model.Task, isCursor, isSelected bool) string 
 	t := theme.Current.Theme
 	styles := theme.Current.Styles
 
-	// Indentation for subtasks
-	indent := ""
-	if task.ParentID != nil {
-		indent = "    " // 4 spaces for subtask indentation
-	}
+	// Indentation based on depth (4 spaces per level)
+	depth := v.taskDepth[task.ID]
+	indent := strings.Repeat("    ", depth)
 
-	// Expand/collapse indicator for parent tasks with subtasks
+	// Expand/collapse indicator for tasks with subtasks, tree connector for subtasks
 	expandIndicator := " "
-	if task.ParentID == nil && len(task.Subtasks) > 0 {
+	if len(task.Subtasks) > 0 {
 		if v.expanded[task.ID] {
 			expandIndicator = "▼"
 		} else {
@@ -3704,20 +3763,8 @@ func (v ListView) loadTasks() tea.Msg {
 		taskTags, _ := v.db.GetTaskTags(tasks[i].ID)
 		tasks[i].Tags = taskTags
 
-		// Load subtasks for this task
-		subtasks, _ := v.db.GetSubtasks(tasks[i].ID)
-		for j := range subtasks {
-			// Enrich subtasks with project info
-			if subtasks[j].ProjectID != nil {
-				if proj, ok := projectMap[*subtasks[j].ProjectID]; ok {
-					subtasks[j].Project = &proj
-				}
-			}
-			// Load tags for subtask
-			subtaskTags, _ := v.db.GetTaskTags(subtasks[j].ID)
-			subtasks[j].Tags = subtaskTags
-		}
-		tasks[i].Subtasks = subtasks
+		// Load subtasks recursively for this task
+		tasks[i].Subtasks = v.loadSubtasksRecursive(tasks[i].ID, projectMap)
 
 		// Load dependencies for this task
 		deps, _ := v.db.GetTaskDependencies(tasks[i].ID)
@@ -3974,20 +4021,42 @@ func (v ListView) removeDependency(taskID, dependsOnID string) tea.Cmd {
 
 // Helper functions
 
-// flattenTasks creates a flat list of tasks for display,
-// including expanded subtasks indented under their parents
-func (v ListView) flattenTasks(tasks []model.Task) []model.Task {
-	var result []model.Task
-	for _, task := range tasks {
-		result = append(result, task)
-		// If this task is expanded, add its subtasks
-		if v.expanded[task.ID] && len(task.Subtasks) > 0 {
-			for _, subtask := range task.Subtasks {
-				result = append(result, subtask)
+// loadSubtasksRecursive loads subtasks and their nested subtasks recursively
+func (v ListView) loadSubtasksRecursive(parentID string, projectMap map[string]model.Project) []model.Task {
+	subtasks, _ := v.db.GetSubtasks(parentID)
+	for i := range subtasks {
+		// Enrich subtask with project info
+		if subtasks[i].ProjectID != nil {
+			if proj, ok := projectMap[*subtasks[i].ProjectID]; ok {
+				subtasks[i].Project = &proj
 			}
 		}
+		// Load tags for subtask
+		subtaskTags, _ := v.db.GetTaskTags(subtasks[i].ID)
+		subtasks[i].Tags = subtaskTags
+		// Recursively load nested subtasks
+		subtasks[i].Subtasks = v.loadSubtasksRecursive(subtasks[i].ID, projectMap)
 	}
+	return subtasks
+}
+
+// flattenTasks creates a flat list of tasks for display,
+// including expanded subtasks indented under their parents
+func (v *ListView) flattenTasks(tasks []model.Task) []model.Task {
+	var result []model.Task
+	v.flattenTasksRecursive(tasks, 0, &result)
 	return result
+}
+
+func (v *ListView) flattenTasksRecursive(tasks []model.Task, depth int, result *[]model.Task) {
+	for _, task := range tasks {
+		v.taskDepth[task.ID] = depth
+		*result = append(*result, task)
+		// If this task is expanded, add its subtasks recursively
+		if v.expanded[task.ID] && len(task.Subtasks) > 0 {
+			v.flattenTasksRecursive(task.Subtasks, depth+1, result)
+		}
+	}
 }
 
 func formatDate(t time.Time) string {
