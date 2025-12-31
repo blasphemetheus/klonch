@@ -72,6 +72,8 @@ klonch --theme dracula
 | `k` / `↑` | Move up |
 | `g` | Go to top |
 | `G` | Go to bottom |
+| `Scroll` | Mouse wheel to move cursor |
+| `Ctrl+m` | Toggle mouse (for copy-paste) |
 
 ### Task Actions
 

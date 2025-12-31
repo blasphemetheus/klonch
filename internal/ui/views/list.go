@@ -181,6 +181,7 @@ type ListView struct {
 	blocked      map[string]bool   // Tasks with incomplete dependencies
 	taskDepth    map[string]int    // Depth level of each task (0 = top-level)
 	textWrap     bool              // Whether to wrap long task titles
+	mouseEnabled bool              // Whether mouse capture is enabled
 
 	mode           ListMode
 	input          textinput.Model
@@ -247,12 +248,13 @@ func NewListView(database *db.DB) ListView {
 	ti.CharLimit = 256
 
 	return ListView{
-		db:        database,
-		selected:  make(map[string]bool),
-		expanded:  make(map[string]bool),
-		blocked:   make(map[string]bool),
-		taskDepth: make(map[string]int),
-		input:     ti,
+		db:           database,
+		selected:     make(map[string]bool),
+		expanded:     make(map[string]bool),
+		blocked:      make(map[string]bool),
+		taskDepth:    make(map[string]int),
+		mouseEnabled: true,
+		input:        ti,
 	}
 }
 
@@ -419,6 +421,25 @@ func (v ListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case timeAddedMsg:
 		v.statusMsg = fmt.Sprintf("Added %d minutes to task", msg.minutes)
 		return v, nil
+
+	case tea.MouseMsg:
+		// Handle mouse wheel scrolling
+		if v.mode == ListModeNormal {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				if v.cursor > 0 {
+					v.cursor--
+					v.ensureCursorVisible()
+				}
+				return v, nil
+			case tea.MouseButtonWheelDown:
+				if v.cursor < len(v.tasks)-1 {
+					v.cursor++
+					v.ensureCursorVisible()
+				}
+				return v, nil
+			}
+		}
 
 	case tea.KeyMsg:
 		switch v.mode {
@@ -926,6 +947,17 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+y", "ctrl+shift+z":
 		// Redo
 		return v.redo()
+
+	case "ctrl+m":
+		// Toggle mouse capture (disable for copy-paste)
+		v.mouseEnabled = !v.mouseEnabled
+		if v.mouseEnabled {
+			v.statusMsg = "Mouse enabled (Shift+click to select text)"
+			return v, tea.EnableMouseCellMotion
+		} else {
+			v.statusMsg = "Mouse disabled (text selection enabled)"
+			return v, tea.DisableMouse
+		}
 	}
 
 	return v, nil

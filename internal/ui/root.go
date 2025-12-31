@@ -736,6 +736,20 @@ func (m RootModel) renderHelp(height int) string {
 		b.WriteString("\n")
 	}
 
+	// Mouse section
+	b.WriteString(sectionStyle.Render("Mouse"))
+	b.WriteString("\n")
+	mouseKeys := [][]string{
+		{"Scroll", "Move cursor up/down"},
+		{"Ctrl+m", "Toggle mouse (for copy-paste)"},
+		{"Shift+click", "Select text (most terminals)"},
+	}
+	for _, kv := range mouseKeys {
+		b.WriteString(keyStyle.Render(kv[0]))
+		b.WriteString(descStyle.Render(kv[1]))
+		b.WriteString("\n")
+	}
+
 	// Footer
 	b.WriteString("\n")
 	b.WriteString(descStyle.Render("Press ? or esc to close"))
