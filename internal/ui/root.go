@@ -741,7 +741,7 @@ func (m RootModel) renderHelp(height int) string {
 	b.WriteString("\n")
 	mouseKeys := [][]string{
 		{"Scroll", "Move cursor up/down"},
-		{"Ctrl+m", "Toggle mouse (for copy-paste)"},
+		{"X", "Toggle mouse (for copy-paste)"},
 		{"Shift+click", "Select text (most terminals)"},
 	}
 	for _, kv := range mouseKeys {

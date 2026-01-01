@@ -948,14 +948,14 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Redo
 		return v.redo()
 
-	case "ctrl+m":
+	case "X":
 		// Toggle mouse capture (disable for copy-paste)
 		v.mouseEnabled = !v.mouseEnabled
 		if v.mouseEnabled {
-			v.statusMsg = "Mouse enabled (Shift+click to select text)"
+			v.statusMsg = "Mouse enabled"
 			return v, tea.EnableMouseCellMotion
 		} else {
-			v.statusMsg = "Mouse disabled (text selection enabled)"
+			v.statusMsg = "Mouse disabled (select text now)"
 			return v, tea.DisableMouse
 		}
 	}
