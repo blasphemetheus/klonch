@@ -67,7 +67,16 @@ func (db *DB) GetSubtasks(parentID string) ([]model.Task, error) {
 		       created_at, updated_at
 		FROM tasks
 		WHERE parent_id = ?
-		ORDER BY position, created_at
+		ORDER BY
+			CASE status WHEN 'done' THEN 1 ELSE 0 END,
+			CASE priority
+				WHEN 'urgent' THEN 0
+				WHEN 'high' THEN 1
+				WHEN 'medium' THEN 2
+				WHEN 'low' THEN 3
+			END,
+			position,
+			created_at DESC
 	`, parentID)
 	if err != nil {
 		return nil, err
