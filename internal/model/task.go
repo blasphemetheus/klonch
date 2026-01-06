@@ -8,6 +8,7 @@ import (
 type Status string
 
 const (
+	StatusBacklog    Status = "backlog"
 	StatusPending    Status = "pending"
 	StatusInProgress Status = "in_progress"
 	StatusDone       Status = "done"
