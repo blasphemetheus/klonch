@@ -7,7 +7,7 @@ A terminal-based task manager built with [Bubble Tea](https://github.com/charmbr
 - **Task Management** - Create, edit, complete, and delete tasks
 - **Projects** - Organize tasks into colored projects
 - **Tags** - Add multiple tags to tasks for flexible categorization
-- **Subtasks** - Single-level nesting for breaking down tasks
+- **Subtasks** - Multi-level nesting for breaking down tasks
 - **Dependencies** - Block tasks until dependencies are complete
 - **Priorities** - Low, medium, high, and urgent levels
 - **Time Tracking** - Manual logging and pomodoro timer
@@ -142,14 +142,33 @@ Access commands via `:` (command palette).
 | `filtertag` | `ft` | Filter by tags |
 | `clear` | | Clear all filters |
 
-### Management Commands
+### Project Commands
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `newproject <name>` | `np` | Create new project |
-| `newtag <name>` | `nt` | Create new tag |
+| `renameproject <old> <new>` | `rp` | Rename a project |
+| `deleteproject <name>` | `dp`, `rmproject` | Delete project (tasks move to inbox) |
+| `colorproject <name> <color>` | `cp` | Set project color |
 | `projects` | `lsp` | List all projects |
+| `recolor` | | Reassign colors to all projects |
+
+### Tag Commands
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `newtag <name>` | `nt` | Create new tag |
+| `renametag <old> <new>` | `rt` | Rename a tag |
+| `deletetag <name>` | `dt`, `rmtag` | Delete a tag |
+| `colortag <name> <color>` | `ct` | Set tag color |
 | `tags` | `lst` | List all tags |
+| `recolortags` | | Reassign colors to all tags |
+| `colors` | `lsc` | List available named colors |
+
+### Other Commands
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
 | `theme <name>` | | Change theme |
 | `sort <field>` | | Sort by priority/due/title/status |
 
@@ -187,6 +206,14 @@ Available themes:
 - `catppuccin`
 
 Change with `:theme <name>` or start with `--theme <name>`.
+
+## Colors
+
+Named colors for projects and tags (use `:colors` to list):
+
+`red`, `green`, `blue`, `yellow`, `orange`, `purple`, `cyan`, `pink`, `mint`, `amber`, `violet`, `lime`, `rose`, `coral`, `gold`, `teal`, `lavender`
+
+You can also use hex codes: `#FF5500`, `#RGB`, `#RRGGBB`
 
 ## License
 
