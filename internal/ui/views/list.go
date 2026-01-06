@@ -154,6 +154,7 @@ var allCommands = []CommandDef{
 	{Name: "renametag", Aliases: []string{"rt", "mvtag"}, Description: "Rename a tag", Usage: "renametag oldname newname", HasArgs: true},
 	{Name: "deletetag", Aliases: []string{"dt", "rmtag"}, Description: "Delete a tag", Usage: "deletetag name", HasArgs: true},
 	{Name: "colortag", Aliases: []string{"ct"}, Description: "Set tag color", Usage: "colortag name red|#FF0000", HasArgs: true},
+	{Name: "colors", Aliases: []string{"lsc"}, Description: "List available colors", Usage: "colors", HasArgs: false},
 	{Name: "recolortags", Aliases: []string{}, Description: "Reassign colors to all tags", Usage: "recolortags", HasArgs: false},
 	{Name: "done", Aliases: []string{"complete", "finish"}, Description: "Toggle done status", Usage: "done", HasArgs: false},
 	{Name: "archive", Aliases: []string{"arch"}, Description: "Archive task(s)", Usage: "archive", HasArgs: false},
@@ -1233,6 +1234,8 @@ func (v ListView) executeCommand(command string) (tea.Model, tea.Cmd) {
 		return v.cmdDeleteTag(args)
 	case "colortag", "ct":
 		return v.cmdColorTag(args)
+	case "colors", "lsc":
+		return v.cmdListColors()
 	case "recolortags":
 		return v.cmdRecolorTags()
 	case "projects", "lsp":
@@ -1764,6 +1767,26 @@ func (v ListView) cmdColorTag(args []string) (tea.Model, tea.Cmd) {
 		}
 		return taskUpdatedMsg{}
 	}
+}
+
+// cmdListColors displays available named colors
+func (v ListView) cmdListColors() (tea.Model, tea.Cmd) {
+	// Sort color names for consistent display
+	names := []string{
+		"red", "green", "blue", "yellow", "orange", "purple",
+		"cyan", "pink", "mint", "amber", "violet", "lime",
+		"rose", "coral", "gold", "teal", "lavender",
+	}
+
+	var colorList []string
+	for _, name := range names {
+		if hex, ok := namedColors[name]; ok {
+			colorList = append(colorList, fmt.Sprintf("%s (%s)", name, hex))
+		}
+	}
+
+	v.statusMsg = "Colors: " + strings.Join(colorList, ", ")
+	return v, nil
 }
 
 // cmdRecolorTags assigns fresh colors to all tags
