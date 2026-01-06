@@ -223,12 +223,15 @@ func (v *KanbanView) ensureCursorVisible() {
 
 // visibleItemCount returns how many items fit in the column height
 func (v *KanbanView) visibleItemCount() int {
-	// Each item takes ~2 lines (content + margin), column has height - 5 for borders/padding
+	// Column height is v.height - 3 (for header row and footer hints)
+	// Border takes 2 lines, leaving v.height - 5 for content
+	// Reserve 2 lines for scroll indicators (top/bottom)
+	// Each item takes 1 line
 	availableHeight := v.height - 7
-	if availableHeight < 2 {
+	if availableHeight < 1 {
 		return 1
 	}
-	return availableHeight / 2
+	return availableHeight
 }
 
 // moveTask moves the current task to an adjacent column
