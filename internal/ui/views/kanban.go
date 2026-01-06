@@ -37,6 +37,9 @@ type KanbanView struct {
 	currentColumn KanbanColumn
 	cursorRow     int
 
+	// Per-column scroll offset
+	columnScroll [4]int
+
 	// Selected tasks
 	selected map[string]bool
 
@@ -145,12 +148,14 @@ func (v KanbanView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			col := v.columns[v.currentColumn]
 			if v.cursorRow < len(col)-1 {
 				v.cursorRow++
+				v.ensureCursorVisible()
 			}
 			return v, nil
 
 		case "k", "up":
 			if v.cursorRow > 0 {
 				v.cursorRow--
+				v.ensureCursorVisible()
 			}
 			return v, nil
 
@@ -167,12 +172,14 @@ func (v KanbanView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "g":
 			v.cursorRow = 0
+			v.columnScroll[v.currentColumn] = 0
 			return v, nil
 
 		case "G":
 			col := v.columns[v.currentColumn]
 			if len(col) > 0 {
 				v.cursorRow = len(col) - 1
+				v.ensureCursorVisible()
 			}
 			return v, nil
 		}
@@ -191,6 +198,37 @@ func (v *KanbanView) clampCursor() {
 			v.cursorRow = 0
 		}
 	}
+	v.ensureCursorVisible()
+}
+
+// ensureCursorVisible adjusts scroll to keep cursor in view
+func (v *KanbanView) ensureCursorVisible() {
+	visibleItems := v.visibleItemCount()
+	if visibleItems <= 0 {
+		visibleItems = 5
+	}
+
+	col := int(v.currentColumn)
+
+	// Scroll down if cursor is below visible area
+	if v.cursorRow >= v.columnScroll[col]+visibleItems {
+		v.columnScroll[col] = v.cursorRow - visibleItems + 1
+	}
+
+	// Scroll up if cursor is above visible area
+	if v.cursorRow < v.columnScroll[col] {
+		v.columnScroll[col] = v.cursorRow
+	}
+}
+
+// visibleItemCount returns how many items fit in the column height
+func (v *KanbanView) visibleItemCount() int {
+	// Each item takes ~2 lines (content + margin), column has height - 5 for borders/padding
+	availableHeight := v.height - 7
+	if availableHeight < 2 {
+		return 1
+	}
+	return availableHeight / 2
 }
 
 // moveTask moves the current task to an adjacent column
@@ -322,19 +360,42 @@ func (v KanbanView) View() string {
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top, headers...)
 
 	// Render columns
+	visibleItems := v.visibleItemCount()
 	var cols []string
 	for i, tasks := range v.columns {
 		isActiveCol := i == int(v.currentColumn)
+		scrollOffset := v.columnScroll[i]
+
+		// Calculate visible range
+		startIdx := scrollOffset
+		endIdx := scrollOffset + visibleItems
+		if startIdx > len(tasks) {
+			startIdx = len(tasks)
+		}
+		if endIdx > len(tasks) {
+			endIdx = len(tasks)
+		}
 
 		var items []string
-		for j, task := range tasks {
+
+		// Show scroll indicator at top if scrolled
+		if scrollOffset > 0 {
+			scrollIndicator := lipgloss.NewStyle().
+				Foreground(t.Subtle).
+				Width(colWidth - 4).
+				Align(lipgloss.Center).
+				Render(fmt.Sprintf("↑ %d more", scrollOffset))
+			items = append(items, scrollIndicator)
+		}
+
+		for j := startIdx; j < endIdx; j++ {
+			task := tasks[j]
 			isSelected := isActiveCol && j == v.cursorRow
 
 			// Task card style
 			cardStyle := lipgloss.NewStyle().
 				Width(colWidth - 4).
-				Padding(0, 1).
-				MarginBottom(1)
+				Padding(0, 1)
 
 			if isSelected {
 				cardStyle = cardStyle.
@@ -368,6 +429,16 @@ func (v KanbanView) View() string {
 
 			cardContent := fmt.Sprintf("%s %s", priorityChar, title)
 			items = append(items, cardStyle.Render(cardContent))
+		}
+
+		// Show scroll indicator at bottom if more items below
+		if endIdx < len(tasks) {
+			scrollIndicator := lipgloss.NewStyle().
+				Foreground(t.Subtle).
+				Width(colWidth - 4).
+				Align(lipgloss.Center).
+				Render(fmt.Sprintf("↓ %d more", len(tasks)-endIdx))
+			items = append(items, scrollIndicator)
 		}
 
 		content := strings.Join(items, "\n")
