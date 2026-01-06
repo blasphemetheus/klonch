@@ -42,6 +42,8 @@ const (
 	ListModeSearch
 	ListModeCommand
 	ListModeConfirmDelete
+	ListModeConfirmDeleteProject
+	ListModeConfirmDeleteTag
 )
 
 // ListViewMode represents what tasks are shown
@@ -220,7 +222,11 @@ type ListView struct {
 	depTasks         []model.Task // Available tasks to depend on
 
 	// For delete confirmation
-	deleteIDs []string
+	deleteIDs         []string
+	deleteProjectID   string // Project pending deletion confirmation
+	deleteProjectName string
+	deleteTagID       string // Tag pending deletion confirmation
+	deleteTagName     string
 
 	// For command palette
 	cmdSuggestions []CommandDef // Filtered command suggestions
@@ -459,6 +465,10 @@ func (v ListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.handleCommandMode(msg)
 		case ListModeConfirmDelete:
 			return v.handleDeleteConfirm(msg)
+		case ListModeConfirmDeleteProject:
+			return v.handleDeleteProjectConfirm(msg)
+		case ListModeConfirmDeleteTag:
+			return v.handleDeleteTagConfirm(msg)
 		default:
 			return v.handleNormalMode(msg)
 		}
@@ -1448,7 +1458,7 @@ func (v ListView) cmdRenameProject(args []string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// cmdDeleteProject deletes a project (tasks are moved to inbox)
+// cmdDeleteProject prompts for confirmation before deleting a project
 func (v ListView) cmdDeleteProject(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		v.statusMsg = "Usage: deleteproject <name>"
@@ -1477,14 +1487,11 @@ func (v ListView) cmdDeleteProject(args []string) (tea.Model, tea.Cmd) {
 		return v, nil
 	}
 
-	projectID := project.ID
-	return v, func() tea.Msg {
-		err := v.db.DeleteProject(projectID)
-		if err != nil {
-			return taskUpdatedMsg{err: err}
-		}
-		return taskUpdatedMsg{}
-	}
+	// Set up confirmation
+	v.deleteProjectID = project.ID
+	v.deleteProjectName = project.Name
+	v.mode = ListModeConfirmDeleteProject
+	return v, nil
 }
 
 // cmdRecolorProjects assigns fresh colors to all projects
@@ -1588,7 +1595,7 @@ func (v ListView) cmdRenameTag(args []string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// cmdDeleteTag deletes a tag
+// cmdDeleteTag prompts for confirmation before deleting a tag
 func (v ListView) cmdDeleteTag(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		v.statusMsg = "Usage: deletetag <name>"
@@ -1611,14 +1618,11 @@ func (v ListView) cmdDeleteTag(args []string) (tea.Model, tea.Cmd) {
 		return v, nil
 	}
 
-	tagID := tag.ID
-	return v, func() tea.Msg {
-		err := v.db.DeleteTag(tagID)
-		if err != nil {
-			return taskUpdatedMsg{err: err}
-		}
-		return taskUpdatedMsg{}
-	}
+	// Set up confirmation
+	v.deleteTagID = tag.ID
+	v.deleteTagName = tag.Name
+	v.mode = ListModeConfirmDeleteTag
+	return v, nil
 }
 
 // cmdRecolorTags assigns fresh colors to all tags
@@ -2338,6 +2342,52 @@ func (v ListView) handleDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "N", "esc":
 		v.mode = ListModeNormal
 		v.deleteIDs = nil
+	}
+	return v, nil
+}
+
+// handleDeleteProjectConfirm handles keypresses in project delete confirmation
+func (v ListView) handleDeleteProjectConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		v.mode = ListModeNormal
+		projectID := v.deleteProjectID
+		v.deleteProjectID = ""
+		v.deleteProjectName = ""
+		return v, func() tea.Msg {
+			err := v.db.DeleteProject(projectID)
+			if err != nil {
+				return taskUpdatedMsg{err: err}
+			}
+			return taskUpdatedMsg{}
+		}
+	case "n", "N", "esc":
+		v.mode = ListModeNormal
+		v.deleteProjectID = ""
+		v.deleteProjectName = ""
+	}
+	return v, nil
+}
+
+// handleDeleteTagConfirm handles keypresses in tag delete confirmation
+func (v ListView) handleDeleteTagConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		v.mode = ListModeNormal
+		tagID := v.deleteTagID
+		v.deleteTagID = ""
+		v.deleteTagName = ""
+		return v, func() tea.Msg {
+			err := v.db.DeleteTag(tagID)
+			if err != nil {
+				return taskUpdatedMsg{err: err}
+			}
+			return taskUpdatedMsg{}
+		}
+	case "n", "N", "esc":
+		v.mode = ListModeNormal
+		v.deleteTagID = ""
+		v.deleteTagName = ""
 	}
 	return v, nil
 }
@@ -3095,6 +3145,26 @@ func (v ListView) View() string {
 			Bold(true)
 		count := len(v.deleteIDs)
 		msg := fmt.Sprintf("Delete %d task(s)? (y/n)", count)
+		b.WriteString(confirmStyle.Render(msg))
+		b.WriteString("\n\n")
+	}
+
+	// Project delete confirmation
+	if v.mode == ListModeConfirmDeleteProject {
+		confirmStyle := lipgloss.NewStyle().
+			Foreground(t.Warning).
+			Bold(true)
+		msg := fmt.Sprintf("Delete project \"%s\"? Tasks will be moved to inbox. (y/n)", v.deleteProjectName)
+		b.WriteString(confirmStyle.Render(msg))
+		b.WriteString("\n\n")
+	}
+
+	// Tag delete confirmation
+	if v.mode == ListModeConfirmDeleteTag {
+		confirmStyle := lipgloss.NewStyle().
+			Foreground(t.Warning).
+			Bold(true)
+		msg := fmt.Sprintf("Delete tag \"@%s\"? (y/n)", v.deleteTagName)
 		b.WriteString(confirmStyle.Render(msg))
 		b.WriteString("\n\n")
 	}
