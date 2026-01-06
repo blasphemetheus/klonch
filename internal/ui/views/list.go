@@ -144,6 +144,7 @@ var allCommands = []CommandDef{
 	{Name: "project", Aliases: []string{"proj", "mv", "move"}, Description: "Move to project", Usage: "project inbox", HasArgs: true},
 	{Name: "parent", Aliases: []string{"setparent"}, Description: "Set parent task (make subtask)", Usage: "parent", HasArgs: false},
 	{Name: "newproject", Aliases: []string{"np", "addproject"}, Description: "Create new project", Usage: "newproject Work", HasArgs: true},
+	{Name: "renameproject", Aliases: []string{"rp", "mvproject"}, Description: "Rename a project", Usage: "renameproject OldName NewName", HasArgs: true},
 	{Name: "recolor", Aliases: []string{}, Description: "Reassign colors to all projects", Usage: "recolor", HasArgs: false},
 	{Name: "newtag", Aliases: []string{"nt", "addtag"}, Description: "Create new tag", Usage: "newtag @urgent", HasArgs: true},
 	{Name: "recolortags", Aliases: []string{}, Description: "Reassign colors to all tags", Usage: "recolortags", HasArgs: false},
@@ -1201,6 +1202,8 @@ func (v ListView) executeCommand(command string) (tea.Model, tea.Cmd) {
 		return v.cmdSetParent()
 	case "newproject", "np", "addproject":
 		return v.cmdNewProject(args)
+	case "renameproject", "rp", "mvproject":
+		return v.cmdRenameProject(args)
 	case "recolor":
 		return v.cmdRecolorProjects()
 	case "newtag", "nt", "addtag":
@@ -1379,6 +1382,60 @@ func (v ListView) cmdNewProject(args []string) (tea.Model, tea.Cmd) {
 			return taskUpdatedMsg{err: err}
 		}
 		return taskUpdatedMsg{} // Triggers loadTasks in handler
+	}
+}
+
+// cmdRenameProject renames an existing project
+func (v ListView) cmdRenameProject(args []string) (tea.Model, tea.Cmd) {
+	if len(args) < 2 {
+		v.statusMsg = "Usage: renameproject <oldname> <newname>"
+		return v, nil
+	}
+
+	// Find the separator between old and new name
+	// Try to find the old project name by matching progressively longer prefixes
+	var oldProject *model.Project
+	var newName string
+
+	for i := 1; i <= len(args)-1; i++ {
+		tryOldName := strings.ToLower(strings.Join(args[:i], " "))
+		for j := range v.projects {
+			if strings.ToLower(v.projects[j].Name) == tryOldName {
+				oldProject = &v.projects[j]
+				newName = strings.Join(args[i:], " ")
+				break
+			}
+		}
+		if oldProject != nil {
+			break
+		}
+	}
+
+	if oldProject == nil {
+		v.statusMsg = fmt.Sprintf("Project not found: %s", args[0])
+		return v, nil
+	}
+
+	if newName == "" {
+		v.statusMsg = "New name cannot be empty"
+		return v, nil
+	}
+
+	// Check if new name already exists
+	for _, p := range v.projects {
+		if strings.ToLower(p.Name) == strings.ToLower(newName) && p.ID != oldProject.ID {
+			v.statusMsg = fmt.Sprintf("Project already exists: %s", p.Name)
+			return v, nil
+		}
+	}
+
+	projectID := oldProject.ID
+	return v, func() tea.Msg {
+		err := v.db.UpdateProject(projectID, newName, oldProject.Color)
+		if err != nil {
+			return taskUpdatedMsg{err: err}
+		}
+		return taskUpdatedMsg{}
 	}
 }
 
