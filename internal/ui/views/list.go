@@ -153,6 +153,7 @@ var allCommands = []CommandDef{
 	{Name: "newtag", Aliases: []string{"nt", "addtag"}, Description: "Create new tag", Usage: "newtag @urgent", HasArgs: true},
 	{Name: "renametag", Aliases: []string{"rt", "mvtag"}, Description: "Rename a tag", Usage: "renametag oldname newname", HasArgs: true},
 	{Name: "deletetag", Aliases: []string{"dt", "rmtag"}, Description: "Delete a tag", Usage: "deletetag name", HasArgs: true},
+	{Name: "colortag", Aliases: []string{"ct"}, Description: "Set tag color", Usage: "colortag name red|#FF0000", HasArgs: true},
 	{Name: "recolortags", Aliases: []string{}, Description: "Reassign colors to all tags", Usage: "recolortags", HasArgs: false},
 	{Name: "done", Aliases: []string{"complete", "finish"}, Description: "Toggle done status", Usage: "done", HasArgs: false},
 	{Name: "archive", Aliases: []string{"arch"}, Description: "Archive task(s)", Usage: "archive", HasArgs: false},
@@ -1230,6 +1231,8 @@ func (v ListView) executeCommand(command string) (tea.Model, tea.Cmd) {
 		return v.cmdRenameTag(args)
 	case "deletetag", "dt", "rmtag":
 		return v.cmdDeleteTag(args)
+	case "colortag", "ct":
+		return v.cmdColorTag(args)
 	case "recolortags":
 		return v.cmdRecolorTags()
 	case "projects", "lsp":
@@ -1704,6 +1707,63 @@ func (v ListView) cmdDeleteTag(args []string) (tea.Model, tea.Cmd) {
 	v.deleteTagName = tag.Name
 	v.mode = ListModeConfirmDeleteTag
 	return v, nil
+}
+
+// cmdColorTag sets a tag's color
+func (v ListView) cmdColorTag(args []string) (tea.Model, tea.Cmd) {
+	if len(args) < 2 {
+		v.statusMsg = "Usage: colortag <name> <color> (e.g., colortag urgent red)"
+		return v, nil
+	}
+
+	// Last arg is the color, first arg is the tag name (tags are single words)
+	colorArg := strings.ToLower(args[len(args)-1])
+	tagName := strings.TrimPrefix(args[0], "@")
+
+	// Find the tag
+	var tag *model.Tag
+	for i := range v.tags {
+		if strings.ToLower(v.tags[i].Name) == strings.ToLower(tagName) {
+			tag = &v.tags[i]
+			break
+		}
+	}
+
+	if tag == nil {
+		v.statusMsg = fmt.Sprintf("Tag not found: @%s", tagName)
+		return v, nil
+	}
+
+	// Resolve color - either named or hex
+	var color string
+	if strings.HasPrefix(colorArg, "#") {
+		// Validate hex color
+		if len(colorArg) != 7 && len(colorArg) != 4 {
+			v.statusMsg = "Invalid hex color. Use #RGB or #RRGGBB format"
+			return v, nil
+		}
+		color = colorArg
+	} else if hex, ok := namedColors[colorArg]; ok {
+		color = hex
+	} else {
+		// List available colors
+		names := make([]string, 0, len(namedColors))
+		for name := range namedColors {
+			names = append(names, name)
+		}
+		v.statusMsg = fmt.Sprintf("Unknown color: %s. Try: %s or #RRGGBB", colorArg, strings.Join(names[:6], ", "))
+		return v, nil
+	}
+
+	tagID := tag.ID
+	tagDisplayName := tag.Name
+	return v, func() tea.Msg {
+		err := v.db.UpdateTag(tagID, tagDisplayName, color)
+		if err != nil {
+			return taskUpdatedMsg{err: err}
+		}
+		return taskUpdatedMsg{}
+	}
 }
 
 // cmdRecolorTags assigns fresh colors to all tags
