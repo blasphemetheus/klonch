@@ -148,6 +148,7 @@ var allCommands = []CommandDef{
 	{Name: "newproject", Aliases: []string{"np", "addproject"}, Description: "Create new project", Usage: "newproject Work", HasArgs: true},
 	{Name: "renameproject", Aliases: []string{"rp", "mvproject"}, Description: "Rename a project", Usage: "renameproject OldName NewName", HasArgs: true},
 	{Name: "deleteproject", Aliases: []string{"dp", "rmproject"}, Description: "Delete a project (tasks move to inbox)", Usage: "deleteproject Name", HasArgs: true},
+	{Name: "colorproject", Aliases: []string{"cp"}, Description: "Set project color", Usage: "colorproject Name red|#FF0000", HasArgs: true},
 	{Name: "recolor", Aliases: []string{}, Description: "Reassign colors to all projects", Usage: "recolor", HasArgs: false},
 	{Name: "newtag", Aliases: []string{"nt", "addtag"}, Description: "Create new tag", Usage: "newtag @urgent", HasArgs: true},
 	{Name: "renametag", Aliases: []string{"rt", "mvtag"}, Description: "Rename a tag", Usage: "renametag oldname newname", HasArgs: true},
@@ -1219,6 +1220,8 @@ func (v ListView) executeCommand(command string) (tea.Model, tea.Cmd) {
 		return v.cmdRenameProject(args)
 	case "deleteproject", "dp", "rmproject":
 		return v.cmdDeleteProject(args)
+	case "colorproject", "cp":
+		return v.cmdColorProject(args)
 	case "recolor":
 		return v.cmdRecolorProjects()
 	case "newtag", "nt", "addtag":
@@ -1492,6 +1495,84 @@ func (v ListView) cmdDeleteProject(args []string) (tea.Model, tea.Cmd) {
 	v.deleteProjectName = project.Name
 	v.mode = ListModeConfirmDeleteProject
 	return v, nil
+}
+
+// namedColors maps color names to hex values
+var namedColors = map[string]string{
+	"red":     "#E06C75",
+	"green":   "#98C379",
+	"yellow":  "#E5C07B",
+	"blue":    "#61AFEF",
+	"purple":  "#C678DD",
+	"cyan":    "#56B6C2",
+	"orange":  "#D19A66",
+	"pink":    "#FF6B9D",
+	"mint":    "#7EC699",
+	"amber":   "#E6B450",
+	"violet":  "#BB9AF7",
+	"lime":    "#9ECE6A",
+	"rose":    "#F7768E",
+	"coral":   "#E06C75",
+	"gold":    "#E5C07B",
+	"teal":    "#56B6C2",
+	"lavender": "#B57EDC",
+}
+
+// cmdColorProject sets a project's color
+func (v ListView) cmdColorProject(args []string) (tea.Model, tea.Cmd) {
+	if len(args) < 2 {
+		v.statusMsg = "Usage: colorproject <name> <color> (e.g., colorproject Work blue)"
+		return v, nil
+	}
+
+	// Last arg is the color, everything before is the project name
+	colorArg := strings.ToLower(args[len(args)-1])
+	projectName := strings.ToLower(strings.Join(args[:len(args)-1], " "))
+
+	// Find the project
+	var project *model.Project
+	for i := range v.projects {
+		if strings.ToLower(v.projects[i].Name) == projectName {
+			project = &v.projects[i]
+			break
+		}
+	}
+
+	if project == nil {
+		v.statusMsg = fmt.Sprintf("Project not found: %s", strings.Join(args[:len(args)-1], " "))
+		return v, nil
+	}
+
+	// Resolve color - either named or hex
+	var color string
+	if strings.HasPrefix(colorArg, "#") {
+		// Validate hex color
+		if len(colorArg) != 7 && len(colorArg) != 4 {
+			v.statusMsg = "Invalid hex color. Use #RGB or #RRGGBB format"
+			return v, nil
+		}
+		color = colorArg
+	} else if hex, ok := namedColors[colorArg]; ok {
+		color = hex
+	} else {
+		// List available colors
+		names := make([]string, 0, len(namedColors))
+		for name := range namedColors {
+			names = append(names, name)
+		}
+		v.statusMsg = fmt.Sprintf("Unknown color: %s. Try: %s or #RRGGBB", colorArg, strings.Join(names[:6], ", "))
+		return v, nil
+	}
+
+	projectID := project.ID
+	projectDisplayName := project.Name
+	return v, func() tea.Msg {
+		err := v.db.UpdateProject(projectID, projectDisplayName, color)
+		if err != nil {
+			return taskUpdatedMsg{err: err}
+		}
+		return taskUpdatedMsg{}
+	}
 }
 
 // cmdRecolorProjects assigns fresh colors to all projects
