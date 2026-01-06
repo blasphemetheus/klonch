@@ -147,6 +147,7 @@ var allCommands = []CommandDef{
 	{Name: "renameproject", Aliases: []string{"rp", "mvproject"}, Description: "Rename a project", Usage: "renameproject OldName NewName", HasArgs: true},
 	{Name: "recolor", Aliases: []string{}, Description: "Reassign colors to all projects", Usage: "recolor", HasArgs: false},
 	{Name: "newtag", Aliases: []string{"nt", "addtag"}, Description: "Create new tag", Usage: "newtag @urgent", HasArgs: true},
+	{Name: "renametag", Aliases: []string{"rt", "mvtag"}, Description: "Rename a tag", Usage: "renametag oldname newname", HasArgs: true},
 	{Name: "recolortags", Aliases: []string{}, Description: "Reassign colors to all tags", Usage: "recolortags", HasArgs: false},
 	{Name: "done", Aliases: []string{"complete", "finish"}, Description: "Toggle done status", Usage: "done", HasArgs: false},
 	{Name: "archive", Aliases: []string{"arch"}, Description: "Archive task(s)", Usage: "archive", HasArgs: false},
@@ -1208,6 +1209,8 @@ func (v ListView) executeCommand(command string) (tea.Model, tea.Cmd) {
 		return v.cmdRecolorProjects()
 	case "newtag", "nt", "addtag":
 		return v.cmdNewTag(args)
+	case "renametag", "rt", "mvtag":
+		return v.cmdRenameTag(args)
 	case "recolortags":
 		return v.cmdRecolorTags()
 	case "projects", "lsp":
@@ -1490,6 +1493,53 @@ func (v ListView) cmdNewTag(args []string) (tea.Model, tea.Cmd) {
 			return taskUpdatedMsg{err: err}
 		}
 		return taskUpdatedMsg{} // Triggers loadTasks in handler
+	}
+}
+
+// cmdRenameTag renames an existing tag
+func (v ListView) cmdRenameTag(args []string) (tea.Model, tea.Cmd) {
+	if len(args) < 2 {
+		v.statusMsg = "Usage: renametag <oldname> <newname>"
+		return v, nil
+	}
+
+	oldName := strings.TrimPrefix(args[0], "@")
+	newName := strings.TrimPrefix(args[1], "@")
+
+	// Find the old tag
+	var oldTag *model.Tag
+	for i := range v.tags {
+		if strings.ToLower(v.tags[i].Name) == strings.ToLower(oldName) {
+			oldTag = &v.tags[i]
+			break
+		}
+	}
+
+	if oldTag == nil {
+		v.statusMsg = fmt.Sprintf("Tag not found: @%s", oldName)
+		return v, nil
+	}
+
+	if newName == "" {
+		v.statusMsg = "New name cannot be empty"
+		return v, nil
+	}
+
+	// Check if new name already exists
+	for _, t := range v.tags {
+		if strings.ToLower(t.Name) == strings.ToLower(newName) && t.ID != oldTag.ID {
+			v.statusMsg = fmt.Sprintf("Tag already exists: @%s", t.Name)
+			return v, nil
+		}
+	}
+
+	tagID := oldTag.ID
+	return v, func() tea.Msg {
+		err := v.db.UpdateTag(tagID, newName, oldTag.Color)
+		if err != nil {
+			return taskUpdatedMsg{err: err}
+		}
+		return taskUpdatedMsg{}
 	}
 }
 
