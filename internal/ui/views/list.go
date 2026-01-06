@@ -145,9 +145,11 @@ var allCommands = []CommandDef{
 	{Name: "parent", Aliases: []string{"setparent"}, Description: "Set parent task (make subtask)", Usage: "parent", HasArgs: false},
 	{Name: "newproject", Aliases: []string{"np", "addproject"}, Description: "Create new project", Usage: "newproject Work", HasArgs: true},
 	{Name: "renameproject", Aliases: []string{"rp", "mvproject"}, Description: "Rename a project", Usage: "renameproject OldName NewName", HasArgs: true},
+	{Name: "deleteproject", Aliases: []string{"dp", "rmproject"}, Description: "Delete a project (tasks move to inbox)", Usage: "deleteproject Name", HasArgs: true},
 	{Name: "recolor", Aliases: []string{}, Description: "Reassign colors to all projects", Usage: "recolor", HasArgs: false},
 	{Name: "newtag", Aliases: []string{"nt", "addtag"}, Description: "Create new tag", Usage: "newtag @urgent", HasArgs: true},
 	{Name: "renametag", Aliases: []string{"rt", "mvtag"}, Description: "Rename a tag", Usage: "renametag oldname newname", HasArgs: true},
+	{Name: "deletetag", Aliases: []string{"dt", "rmtag"}, Description: "Delete a tag", Usage: "deletetag name", HasArgs: true},
 	{Name: "recolortags", Aliases: []string{}, Description: "Reassign colors to all tags", Usage: "recolortags", HasArgs: false},
 	{Name: "done", Aliases: []string{"complete", "finish"}, Description: "Toggle done status", Usage: "done", HasArgs: false},
 	{Name: "archive", Aliases: []string{"arch"}, Description: "Archive task(s)", Usage: "archive", HasArgs: false},
@@ -1205,12 +1207,16 @@ func (v ListView) executeCommand(command string) (tea.Model, tea.Cmd) {
 		return v.cmdNewProject(args)
 	case "renameproject", "rp", "mvproject":
 		return v.cmdRenameProject(args)
+	case "deleteproject", "dp", "rmproject":
+		return v.cmdDeleteProject(args)
 	case "recolor":
 		return v.cmdRecolorProjects()
 	case "newtag", "nt", "addtag":
 		return v.cmdNewTag(args)
 	case "renametag", "rt", "mvtag":
 		return v.cmdRenameTag(args)
+	case "deletetag", "dt", "rmtag":
+		return v.cmdDeleteTag(args)
 	case "recolortags":
 		return v.cmdRecolorTags()
 	case "projects", "lsp":
@@ -1442,6 +1448,45 @@ func (v ListView) cmdRenameProject(args []string) (tea.Model, tea.Cmd) {
 	}
 }
 
+// cmdDeleteProject deletes a project (tasks are moved to inbox)
+func (v ListView) cmdDeleteProject(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		v.statusMsg = "Usage: deleteproject <name>"
+		return v, nil
+	}
+
+	projectName := strings.ToLower(strings.Join(args, " "))
+
+	// Find the project
+	var project *model.Project
+	for i := range v.projects {
+		if strings.ToLower(v.projects[i].Name) == projectName {
+			project = &v.projects[i]
+			break
+		}
+	}
+
+	if project == nil {
+		v.statusMsg = fmt.Sprintf("Project not found: %s", args[0])
+		return v, nil
+	}
+
+	// Don't allow deleting inbox
+	if project.ID == "inbox" {
+		v.statusMsg = "Cannot delete the inbox project"
+		return v, nil
+	}
+
+	projectID := project.ID
+	return v, func() tea.Msg {
+		err := v.db.DeleteProject(projectID)
+		if err != nil {
+			return taskUpdatedMsg{err: err}
+		}
+		return taskUpdatedMsg{}
+	}
+}
+
 // cmdRecolorProjects assigns fresh colors to all projects
 func (v ListView) cmdRecolorProjects() (tea.Model, tea.Cmd) {
 	if len(v.projects) == 0 {
@@ -1536,6 +1581,39 @@ func (v ListView) cmdRenameTag(args []string) (tea.Model, tea.Cmd) {
 	tagID := oldTag.ID
 	return v, func() tea.Msg {
 		err := v.db.UpdateTag(tagID, newName, oldTag.Color)
+		if err != nil {
+			return taskUpdatedMsg{err: err}
+		}
+		return taskUpdatedMsg{}
+	}
+}
+
+// cmdDeleteTag deletes a tag
+func (v ListView) cmdDeleteTag(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		v.statusMsg = "Usage: deletetag <name>"
+		return v, nil
+	}
+
+	tagName := strings.TrimPrefix(args[0], "@")
+
+	// Find the tag
+	var tag *model.Tag
+	for i := range v.tags {
+		if strings.ToLower(v.tags[i].Name) == strings.ToLower(tagName) {
+			tag = &v.tags[i]
+			break
+		}
+	}
+
+	if tag == nil {
+		v.statusMsg = fmt.Sprintf("Tag not found: @%s", tagName)
+		return v, nil
+	}
+
+	tagID := tag.ID
+	return v, func() tea.Msg {
+		err := v.db.DeleteTag(tagID)
 		if err != nil {
 			return taskUpdatedMsg{err: err}
 		}
