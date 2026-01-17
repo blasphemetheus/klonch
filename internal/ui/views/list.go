@@ -838,8 +838,20 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case "u":
+		// Unparent: promote subtask to top-level task
+		if len(v.tasks) > 0 {
+			task := v.tasks[v.cursor]
+			if task.ParentID != nil {
+				return v, v.unparentTask(task.ID)
+			} else {
+				v.statusMsg = "Task is already top-level"
+			}
+		}
+		return v, nil
+
 	case "o":
-		// Toggle expand/collapse subtasks
+		// Toggle expand/collapse immediate subtasks
 		if len(v.tasks) > 0 {
 			task := v.tasks[v.cursor]
 			// Toggle for any task with subtasks
@@ -852,15 +864,29 @@ func (v ListView) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
-	case "E":
-		// Expand all tasks with subtasks
-		count := 0
-		for _, task := range v.allTasks {
+	case "O":
+		// Recursively expand/collapse all descendants
+		if len(v.tasks) > 0 {
+			task := v.tasks[v.cursor]
 			if len(task.Subtasks) > 0 {
-				v.expanded[task.ID] = true
-				count++
+				// Check if currently expanded to determine action
+				expanding := !v.expanded[task.ID]
+				count := v.expandTaskRecursive(task, expanding)
+				v.applyFilter()
+				if expanding {
+					v.statusMsg = fmt.Sprintf("Expanded %d tasks recursively", count)
+				} else {
+					v.statusMsg = fmt.Sprintf("Collapsed %d tasks recursively", count)
+				}
+			} else {
+				v.statusMsg = "No subtasks to expand"
 			}
 		}
+		return v, nil
+
+	case "E":
+		// Expand all tasks with subtasks at all levels
+		count := v.expandAllRecursive(v.allTasks)
 		if count > 0 {
 			v.applyFilter()
 			v.statusMsg = fmt.Sprintf("Expanded %d tasks", count)
@@ -3033,6 +3059,11 @@ func (v ListView) setTaskParent(taskID, parentID string) tea.Cmd {
 	}
 }
 
+// unparentTask promotes a subtask to top-level by removing its parent
+func (v ListView) unparentTask(taskID string) tea.Cmd {
+	return v.setTaskParent(taskID, "")
+}
+
 // pushUndo adds an action to the undo stack and clears the redo stack
 func (v *ListView) pushUndo(action UndoAction) {
 	v.undoStack = append(v.undoStack, action)
@@ -4508,6 +4539,37 @@ func (v *ListView) flattenTasksRecursive(tasks []model.Task, depth int, result *
 			v.flattenTasksRecursive(task.Subtasks, depth+1, result)
 		}
 	}
+}
+
+// expandTaskRecursive expands or collapses a task and all its descendants
+// Returns the count of tasks affected
+func (v *ListView) expandTaskRecursive(task model.Task, expand bool) int {
+	count := 0
+	if len(task.Subtasks) > 0 {
+		if expand {
+			v.expanded[task.ID] = true
+		} else {
+			delete(v.expanded, task.ID)
+		}
+		count++
+		for _, subtask := range task.Subtasks {
+			count += v.expandTaskRecursive(subtask, expand)
+		}
+	}
+	return count
+}
+
+// expandAllRecursive expands all tasks with subtasks at all levels
+func (v *ListView) expandAllRecursive(tasks []model.Task) int {
+	count := 0
+	for _, task := range tasks {
+		if len(task.Subtasks) > 0 {
+			v.expanded[task.ID] = true
+			count++
+			count += v.expandAllRecursive(task.Subtasks)
+		}
+	}
+	return count
 }
 
 func formatDate(t time.Time) string {

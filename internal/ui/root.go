@@ -612,9 +612,10 @@ func (m RootModel) renderHelp(height int) string {
 		{"s", "Add subtask (or sibling if on subtask)"},
 		{"S", "Add child subtask (nested)"},
 		{"P", "Make task a subtask of another"},
-		{"o", "Toggle expand/collapse subtasks"},
-		{"E", "Expand all subtasks"},
-		{"C", "Collapse all subtasks"},
+		{"o", "Toggle expand/collapse (one level)"},
+		{"O", "Toggle expand/collapse (recursive)"},
+		{"E", "Expand all (all levels)"},
+		{"C", "Collapse all"},
 	}
 	for _, kv := range subtaskKeys {
 		b.WriteString(keyStyle.Render(kv[0]))
